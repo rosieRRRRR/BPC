@@ -1,1924 +1,2249 @@
 # Bitcoin Pre-Contracts (BPC)
 
-**A Deterministic Authorization Framework for Bitcoin Settlement**
+**Deterministic Authorization Before Bitcoin Transaction Construction**
 
 * **Specification Version:** 1.0.0
-* **Status:** Public Beta - Feedback Welcome
-* **Date:** 2026
+* **Status:** Public Beta - Draft for Review
+* **Date:** January 2026
 * **Author:** rosiea
-* **Contact:** [PQRosie@proton.me](mailto:PQRosie@proton.me)
-* **Licence:** Apache License 2.0 — Copyright 2026 rosiea
+* **Contact:** PQRosie@proton.me
+* **Licence:** Apache License 2.0 - Copyright 2026 rosiea
 
 ---
 
-## 0. Introduction
+## Abstract
 
-### 0.1 What BPC Does
+Bitcoin Pre-Contracts (BPC) prevents the premature construction of Bitcoin transactions by requiring deterministic authorization before any spend artifact exists.
 
-Bitcoin Pre-Contracts (BPC) enables **deterministic, auditable authorization** before Bitcoin transactions are constructed.
+Traditional Bitcoin workflow constructs, signs, and broadcasts transactions immediately, assuming conditions were met. This creates a window where broadcast-valid transactions exist before authorization can be verified, enabling premature execution, replay attacks, and authorization bypass.
 
-BPC solves a fundamental problem: how to enforce complex preconditions—multi-party approvals, time constraints, verifiable proofs—before any broadcast-valid transaction exists, while preserving Bitcoin's sovereignty model and requiring no consensus changes.
+BPC inverts this model: authorization precedes construction. Wallets declare transaction intent, gather verifiable evidence, and evaluate preconditions deterministically. Only after explicit ALLOW does construction occur.
 
-**Core capabilities:**
+No Bitcoin consensus changes required.
 
-- **Refusal-first enforcement** — Wallets refuse to construct transactions until all preconditions are satisfied
-- **Deterministic evaluation** — Identical inputs always produce identical authorization decisions across implementations
-- **Verifiable time authority** — All timing decisions derive from cryptographically signed, Bitcoin-anchored time
-- **Template binding** — Authorization commits to specific transaction structure, preventing post-approval mutation
-- **Standard Bitcoin settlement** — Final transactions are normal Bitcoin L1 transactions
-
-**The insight:** No broadcast-valid spend artifact exists until preconditions are satisfied.
-
-### 0.2 Philosophy
-
-BPC is built on a small set of Bitcoin-native principles that prioritise
-sovereignty, determinism, and explicit authority boundaries.
-
-#### 0.2.1 Sovereignty Preservation
-
-BPC preserves the core Bitcoin principle that **the signer is sovereign**.
-
-No component in a BPC system is permitted to compel signing, infer consent,
-or proceed on behalf of a key holder. Wallets and signers retain final control
-over whether a transaction is constructed and signed.
-
-BPC does not automate signing. It defines **deterministic refusal rules**
-that wallets may enforce prior to signing.
-
-#### 0.2.2 Bitcoin as Root Anchor
-
-All authority in BPC ultimately derives from Bitcoin itself.
-
-- Time authority is anchored to a Bitcoin-inscribed profile (Epoch Clock)
-- Settlement occurs exclusively via standard Bitcoin L1 transactions
-- No changes are made to Bitcoin consensus, Script, or transaction validity rules
-
-BPC operates entirely *before* transaction construction. Once a transaction
-is broadcast, BPC has no further role.
-
-#### 0.2.3 Decentralisation Without New Consensus
-
-BPC introduces no new ledger, token, or consensus mechanism.
-
-- Mirrors provide redundancy, not authority
-- Evaluators verify evidence; they do not assert truth
-- Verification is local and deterministic
-- No single service is trusted by default
-
-This preserves Bitcoin’s decentralised trust model while enabling richer
-pre-transaction coordination.
-
-#### 0.2.4 Refusal-Driven Design (Informative)
-
-BPC follows **Refusal-Driven Design (RDD)**.
-
-In Refusal-Driven Design, systems are constructed such that:
-- the default and safe behaviour is refusal,
-- progress occurs only when required inputs are present and verifiable,
-- no executable or spend-authorising artefact exists prior to authorisation.
-
-In BPC, refusal is not an error condition or fallback path. It is the
-**primary enforcement mechanism**.
-
-Specifically:
-- absence of required evidence results in refusal (fail closed),
-- authorisation produces no broadcast-valid spend artefacts before `ALLOW`,
-- canonical binding prevents post-authorisation mutation,
-- determinism is enforced through canonical encoding and explicit authority sources.
-
-RDD is a design doctrine that applies across the PQ ecosystem.
-Normative enforcement rules are defined elsewhere in this specification
-(e.g. Security Invariants, Execution Gate).
+The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this document are to be interpreted as described in RFC 2119.
 
 ---
 
-This philosophy ensures that BPC systems degrade safely, remain auditable,
-and preserve signer sovereignty under all failure modes.
+## 1. Why This Matters
 
+### 1.1 The Problem: Premature Transaction Construction
 
-### 0.3 Positioning
+Alice wants to sell 10 BTC to Bob for $1,000,000 USD via OTC settlement.
 
-BPC operates **before** transaction construction, not during or after.
+**Without BPC (Standard Bitcoin):**
 
-It is:
-- A **refusal framework** for authorization discipline
-- A **precondition evaluator** for complex spending policies
-- A **binding mechanism** between approval and execution
+```
+T+0:    Alice constructs transaction: 10 BTC → Bob's address
+T+0:    Alice signs transaction with her private key
+        Transaction is now broadcast-valid
+T+0:    Alice sends signed transaction to Bob for review
+        ↓
+T+30s:  Bob verifies transaction structure
+T+60s:  Bob initiates bank wire for $1,000,000
+        ↓
+        [Bob expects Alice to wait for payment confirmation]
+        ↓
+T+120s: Alice broadcasts transaction immediately
+        (ignores agreement to wait for payment)
+        ↓
+T+600s: Transaction confirms on Bitcoin blockchain
+        Alice has 10 BTC worth of Bob's money
+        Bob has no recourse
+        ↓
+Result: Alice executed before Bob's payment arrived
+        Bob loses $1,000,000
+```
 
-It occupies the space: **deterministic off-chain evaluation + standard Bitcoin settlement**.
-
-### 0.4 Cryptographic Scope (Informative)
-
-BPC v1.0.0 is specified as a **Minimum Viable Protocol (MVP)** with respect to cryptographic primitives.
-
-This specification defines:
-- Deterministic structure and canonical encoding
-- Refusal-first enforcement semantics
-- Explicit authority and binding boundaries
-- Extension points for future cryptographic suites
-
-BPC's security value derives from **authorization discipline and execution gating**, not from replacing Bitcoin's consensus cryptography. This ensures immediate deployability on current Bitcoin infrastructure while avoiding premature cryptographic standard lock-in.
-
-### 0.5 Quantum Awareness (Informative)
-
-BPC is **quantum-aware** in architecture but **classically settled** on Bitcoin L1.
-
-| Component | Status | Quantum Property |
-|---------|--------|------------------|
-| Epoch Clock signatures | Active | Post-quantum (ML-DSA-65) |
-| PreContractOutcome signatures | Deployment-defined | MAY be post-quantum via `sig_alg` |
-| Approvals signatures | Deployment-defined | MAY be post-quantum via `sig_alg` |
-| Bitcoin settlement (L1) | Fixed | Classical (secp256k1) |
-
-The architecture does not assume perpetual secrecy of classical keys. Authorization is not reduced to a single cryptographic primitive. Time, structure, and execution gating remain meaningful even if some primitives weaken.
-
-Post-quantum guarantees in BPC apply to the **authorization layer** only. Full post-quantum settlement requires Bitcoin consensus changes and remains out of scope.
+**The vulnerability:** Once Alice constructs and signs the transaction, she controls when it broadcasts. Bob has no enforcement mechanism. The signed transaction is a loaded gun that Alice can fire at any time.
 
 ---
 
-## 1. Purpose and Scope
+**With BPC:**
 
-### 1.1 Core Purpose
+```
+T+0:    Alice creates PreContractIntent
+        Intent declares: "Send 10 BTC to Bob"
+        Intent includes condition: "Requires proof of $1M payment"
+        Intent is NOT a transaction (no signatures, not broadcast-valid)
+        ↓
+T+30s:  Bob reviews intent
+        Bob initiates bank wire for $1,000,000
+        ↓
+T+3600s: Bob receives payment confirmation from bank
+        Bank issues cryptographic proof of payment
+        ↓
+T+3700s: Bob submits EvidenceBundle
+        Evidence includes: payment proof, current time, approvals
+        ↓
+T+3800s: BPC Evaluator processes evidence
+        Evaluator checks:
+        - Payment proof valid? YES
+        - Amount correct? YES ($1M)
+        - Recipient correct? YES (Alice)
+        - Time conditions met? YES
+        ↓
+        Evaluator decision: ALLOW
+        ↓
+T+3900s: Alice's wallet receives ALLOW outcome
+        ONLY NOW does wallet construct transaction
+        Alice signs constructed transaction
+        Alice broadcasts to Bitcoin network
+        ↓
+T+4500s: Transaction confirms on blockchain
+        Both parties protected
+        ↓
+Result: Construction occurred ONLY AFTER payment verified
+        No premature execution possible
+        Bob protected
+```
 
-BPC defines a deterministic architecture for enforcing **contractual preconditions** before a Bitcoin transaction can be constructed and broadcast.
-
-BPC ensures:
-- A wallet or engine **refuses** (fails closed) on missing, stale, ambiguous, or unverifiable evidence
-- Evaluation is deterministic: identical inputs produce identical outputs
-- Bitcoin remains unchanged: settlement is normal L1 execution and finality
-- An audit trail exists for every evaluation decision
-
-### 1.2 Use Cases
-
-BPC excels in scenarios requiring enforceable preconditions:
-
-**Delivery-vs-Payment (DvP)**  
-Neither party sends first. Conditions gate transaction construction. Both parties provide evidence; transaction only exists after mutual verification.
-
-**Multi-Party Treasury**  
-Require N-of-M approvals before any broadcast-valid transaction exists. Policy enforcement happens before signing, not after.
-
-**Time-Bounded Releases**  
-Funds cannot be constructed into a spendable transaction until verified time conditions pass. No reliance on block timestamps or system clocks.
-
-**Proof-Dependent Releases**  
-Require cryptographic proof of off-chain events (payment receipts, attestations) before enabling spend.
-
-**Coordinated Multi-Party Operations**  
-Ensure all parties have provided required evidence before any signing occurs. Atomic "all-or-nothing" precondition satisfaction.
-
-### 1.3 When to Use BPC (Normative Guidance)
-
-BPC SHOULD be used when **all** of the following are true:
-
-- Settlement occurs on Bitcoin L1 using standard transactions
-- The decision to proceed can be determined *before* transaction construction
-- Required conditions can be expressed as verifiable evidence (time, consent, approvals, structure)
-- Failure to meet conditions MUST result in refusal, not degraded execution
-- An auditable record of authorization decisions is required
-
-Typical conformant use cases: OTC settlement, policy-governed treasury, time-bounded releases, multi-party approval workflows, pre-authorized settlement pipelines.
-
-### 1.4 Scope Definition
-
-**This specification defines:**
-- Deterministic evaluation of preconditions prior to transaction construction
-- Fail-closed refusal when evidence, time, or bindings are missing or invalid
-- Prevention of broadcast-valid spend artifacts before authorization
-- Cryptographically verifiable audit trails for authorization decisions
-- Compatibility with standard Bitcoin L1 settlement
-
-**This specification does not define:**
-- Consumer-side wallet UX or key management
-- Application-level business logic beyond authorization
-- Bitcoin consensus or transaction validity rules
-- On-chain execution, covenants, or Script extensions
-- Miner behavior, inclusion guarantees, or censorship resistance
-
-### 1.5 Boundary Conditions (Normative)
-
-**BPC MUST NOT be used when any of the following are required:**
-
-- On-chain execution of conditional logic
-- Enforcement of conditions *after* broadcast
-- Subjective judgment, interpretation, or dispute resolution
-- Guarantees of miner inclusion, ordering, or censorship resistance
-- Continuous or stateful execution across multiple transactions
-- Automatic or unattended signing without explicit authorization
-
-Attempting to use BPC in these scenarios is a **category error** and results in non-conformant systems that provide misleading security guarantees.
-
-**Common misinterpretations to avoid:**
-
-BPC is not a smart contract language, virtual machine, or programmable execution environment. It is not an on-chain execution system or covenant mechanism. It does not modify Bitcoin consensus, Script semantics, or transaction validity rules. It is not a replacement for PSBT, wallet signing logic, or key custody systems. It is not a general-purpose automation framework, workflow engine, oracle network, truth arbitration system, or attestation authority.
-
-Any implementation or documentation treating BPC as performing on-chain execution, enforcing consensus rules, or asserting external truth claims is **non-conformant** with this specification.
-
-BPC provides **authorization refusal semantics only**. It determines whether a transaction *may be constructed*, not how it executes, how it is settled, or whether it is included in a block.
+**The protection:** No broadcast-valid transaction exists until authorization succeeds. Alice cannot construct or sign until Bob's payment is verified. The authorization check is cryptographically bound to the transaction structure.
 
 ---
 
-## 1.6 Security Model
+### 1.2 Attack Scenarios BPC Prevents
 
-### 1.6.1 Threat Model
+**Scenario 1: Premature Execution**
 
-BPC addresses **unauthorized or premature transaction construction**.
+Without BPC: Signed transaction exists before conditions verified, can be broadcast early.
 
-**Threats BPC prevents:**
-- Construction of broadcast-valid transactions before required conditions are satisfied
-- Replay of authorization decisions outside their validity window
-- Substitution or mutation of transaction structure after authorization
-- Execution proceeding under stale, ambiguous, or unverifiable time or evidence
-- Partial execution or secret exposure during failed execution attempts
-- Ambiguity-driven downgrade or "best effort" execution paths
-
-**Threats BPC does not address:**
-- Theft or compromise of signing keys outside the BPC-controlled environment
-- Malicious or coerced signers acting against their own interests
-- Miner censorship, reordering, fee manipulation, or reorgs
-- Denial-of-service against networks, mirrors, or evaluators
-- Side-channel attacks on cryptographic implementations
-- Bugs or vulnerabilities in wallet software, operating systems, or hardware
-- Disputes over intent, fairness, or contract interpretation
-- Legal enforceability, remedies, or arbitration outcomes
-
-These require secure key custody practices, robust wallet and OS security, Bitcoin's own consensus properties, and operational/legal controls external to this specification.
-
-**Assumed attacker capabilities:**
-- Observe network traffic and mempool state
-- Attempt to replay or substitute authorization artifacts
-- Attempt to present stale or partial evidence
-- Attempt to exploit ambiguity in time or evaluation order
-- Control or compromise individual mirrors or evaluators
-- Exploit implementation bugs if present
-
-**Assumed attacker limitations:**
-- Cannot forge valid cryptographic signatures without key material
-- Cannot cause deterministic evaluation to yield different results for identical inputs
-- Cannot bypass refusal semantics without violating explicit conformance rules
-
-### 1.6.2 Security Invariants (Normative)
-
-The following security invariants MUST hold for any conformant BPC implementation. Violation of any invariant constitutes **critical non-conformance**.
+With BPC: No transaction exists until ALLOW. Construction gated by authorization.
 
 ---
 
-#### Invariant 1 — No Pre-Authorization Spend Artifact
+**Scenario 2: Stale Authorization**
 
-No broadcast-valid primary spend transaction or PSBT containing spend-authorizing material MUST exist before a corresponding `ALLOW` outcome is issued.
+Without BPC: Transaction constructed days ago, broadcast after conditions no longer hold.
+
+With BPC: Authorization includes expiry. Expired outcomes refuse execution.
+
+---
+
+**Scenario 3: Authorization Replay**
+
+Without BPC: Single authorization used multiple times for different transactions.
+
+With BPC: Authorization cryptographically bound to specific transaction structure via template hash. Single-use enforcement via decision_id tracking.
+
+---
+
+**Scenario 4: Evidence Manipulation**
+
+Without BPC: No verifiable evidence requirements. Trust-based settlement.
+
+With BPC: Evidence verified deterministically. Tampered evidence causes DENY. Time evidence anchored to Bitcoin-inscribed Epoch Clock profile.
+
+---
+
+### 1.3 Use Cases
+
+BPC is optimized for transaction flows requiring deterministic authorization prior to construction.
+
+BPC should be used when:
+
+* Settlement occurs on Bitcoin L1
+* Authorization can be determined before construction
+* Conditions are expressible as verifiable evidence
+* Failure to meet conditions MUST prevent construction
+* An auditable authorization trail is required
+
+**Typical applications include:**
+
+* OTC settlement with delivery-vs-payment atomicity
+* Policy-governed treasury operations (requires M-of-N approval)
+* Time-bounded releases (vesting schedules, cliff unlocks)
+* Multi-party approval workflows (corporate treasury, DAO operations)
+* Proof-dependent settlement (oracle data, attestations)
+
+**BPC should not be used when:**
+
+* Transactions are simple single-signature spends (unnecessary overhead)
+* Conditions require on-chain enforcement (use Bitcoin Script instead)
+* Subjective judgment is required (BPC enforces deterministic verification only)
+* Real-time execution without verification delay is required
+* Privacy requirements outweigh auditability requirements
+
+---
+
+## 2. How BPC Works
+
+### 2.1 Core Principle
+
+BPC enforces a single, non-negotiable rule:
+
+> **A broadcast-valid Bitcoin transaction MUST NOT be constructed until authorization succeeds.**
+
+Instead of:
+```
+Construct → Sign → Broadcast → Hope conditions were met
+```
+
+BPC requires:
+```
+Declare intent → Gather evidence → Evaluate → Authorize → ONLY THEN construct
+```
+
+---
+
+### 2.2 Protocol Flow (High-Level)
+
+**Phase 1: Intent Declaration**
+
+Wallet creates PreContractIntent declaring what transaction may be constructed.
+
+Intent includes:
+- Transaction structure (inputs, outputs, amounts)
+- Required conditions (time bounds, approvals, proofs)
+- Expiry window
+- Contract identifier
+
+Intent is NOT a transaction. It contains no signatures, no witness data, no broadcast-valid artifact.
+
+---
+
+**Phase 2: Evidence Gathering**
+
+Required parties collect verifiable evidence:
+
+- Time evidence (from Epoch Clock, anchored to Bitcoin)
+- Approval signatures (from authorized parties)
+- External proofs (payment confirmations, attestations)
+
+Evidence is assembled into EvidenceBundle, cryptographically bound to intent.
+
+---
+
+**Phase 3: Deterministic Evaluation**
+
+Evaluator receives Intent + Evidence and processes deterministically:
+
+```
+Input:  PreContractIntent + EvidenceBundle
+Output: ALLOW | DENY | LOCKED
+```
+
+**Evaluation rules:**
+
+- Time evidence valid and current?
+- All required approvals present and valid?
+- All required proofs present and verified?
+- Intent not expired?
+- All bindings match?
+
+If ALL conditions satisfied: ALLOW
+If ANY condition fails: DENY
+If evaluation cannot complete safely: LOCKED
+
+Same inputs MUST produce same output. No randomness, no discretion, no human judgment.
+
+---
+
+**Phase 4: Authorization Enforcement (Execution Gate)**
+
+Wallet receives PreContractOutcome containing decision.
+
+If decision is ALLOW:
+- Wallet verifies outcome signature
+- Wallet verifies all cryptographic bindings
+- Wallet verifies outcome not expired
+- Wallet verifies outcome not previously used
+- Wallet constructs transaction
+- Wallet presents transaction to signer
+- Signer independently verifies outcome
+- Signer signs transaction
+- Wallet broadcasts to Bitcoin network
+
+If decision is DENY or LOCKED:
+- Wallet refuses construction
+- No transaction artifact created
+- Failure recorded in ExecutionResult
+- User notified with reason
+
+Any verification failure during execution gate refuses construction.
+
+---
+
+### 2.2A Time Evidence via Epoch Clock
+
+BPC requires a deterministic, verifier-independent time source for all temporal authorization decisions, including expiry enforcement, replay prevention, and ordering guarantees.
+
+BPC uses **Epoch Clock** as its sole source of time evidence.
+
+Epoch Clock provides a Bitcoin-anchored time authority with the following properties:
+
+**Time Authority Properties:**
+
+* A canonical Epoch Clock profile inscribed on Bitcoin at ordinal
+  `439d7ab1972803dd984bf7d5f05af6d9f369cf52197440e6dda1d9a2ef59b6ebi0`
+* Deterministic tick derivation anchored to Bitcoin blockchain state
+* Cryptographically signed ticks verifiable against the canonical profile
+* Verifier independence: any conformant implementation derives identical ticks from the same blockchain state
+
+Epoch Clock introduces no execution authority and no custody role. It supplies verifiable time only.
+
+---
+
+#### How Time Evidence Is Used
+
+Epoch Clock time evidence is incorporated into BPC as follows:
+
+1. **Profile Resolution**
+   The canonical Epoch Clock profile is resolved from its Bitcoin inscription.
+
+2. **Tick Derivation**
+   The current tick is derived deterministically from Bitcoin blockchain state, as defined by the Epoch Clock specification.
+
+3. **Signature Verification**
+   The tick signature is verified against the public key defined in the canonical profile.
+
+4. **Evidence Binding**
+   The verified tick is included in the `EvidenceBundle` and bound to the evaluated intent.
+
+All evaluators and signers MUST verify time evidence independently.
+
+---
+
+#### Availability and Fallback Rules
+
+* Epoch Clock time is available whenever Bitcoin blockchain state is available.
+* Implementations MAY obtain ticks from decentralized mirrors for transport convenience.
+* Implementations MUST verify all ticks against the canonical profile.
+* Implementations MUST NOT fall back to system time, wall-clock time, or platform time sources.
+
+If valid time evidence cannot be obtained or verified, evaluation MUST emit `LOCKED`.
+
+---
+
+#### Rationale
+
+BPC authorization depends on deterministic time semantics.
+
+Allowing system time or discretionary fallbacks would:
+
+* break determinism,
+* enable replay ambiguity,
+* introduce verifier disagreement,
+* undermine auditability.
+
+Epoch Clock ensures that all temporal decisions in BPC are derived from a common, Bitcoin-anchored reference without introducing new execution authority.
+
+For the full Epoch Clock specification, see: https://github.com/rosieRRRRR/epoch-clock
+
+---
+
+### 2.3 Visual Flow Diagram
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                     BPC AUTHORIZATION FLOW                        │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                   │
+│  [USER INITIATES]                                                │
+│         │                                                         │
+│         ▼                                                         │
+│  ┌─────────────────┐                                             │
+│  │ PreContractIntent│  ← Declares what may be constructed        │
+│  │ (No signatures) │                                             │
+│  └────────┬─────────┘                                             │
+│           │                                                       │
+│           ▼                                                       │
+│  ┌─────────────────┐                                             │
+│  │ EvidenceBundle  │  ← Verifiable inputs                        │
+│  │ - Time evidence │                                             │
+│  │ - Approvals     │                                             │
+│  │ - Proofs        │                                             │
+│  └────────┬─────────┘                                             │
+│           │                                                       │
+│           ▼                                                       │
+│  ┌─────────────────┐                                             │
+│  │   EVALUATOR     │  ← Deterministic processing                 │
+│  │                 │                                             │
+│  │  Same inputs    │                                             │
+│  │  Same output    │                                             │
+│  └────────┬─────────┘                                             │
+│           │                                                       │
+│      ┌────┴────┬───────────┐                                     │
+│      ▼         ▼           ▼                                     │
+│   [ALLOW]   [DENY]    [LOCKED]                                   │
+│      │         │           │                                     │
+│      │         └───────────┴────> REFUSE (No tx created)         │
+│      │                                                           │
+│      ▼                                                           │
+│  ┌─────────────────┐                                             │
+│  │ EXECUTION GATE  │  ← Verify outcome + bindings               │
+│  │                 │                                             │
+│  │ - Check sig     │                                             │
+│  │ - Check expiry  │                                             │
+│  │ - Check replay  │                                             │
+│  │ - Check bindings│                                             │
+│  └────────┬─────────┘                                             │
+│           │                                                       │
+│      All valid?                                                  │
+│           │                                                       │
+│           ▼                                                       │
+│  ┌─────────────────┐                                             │
+│  │ CONSTRUCT TX    │  ← ONLY NOW does transaction exist         │
+│  └────────┬─────────┘                                             │
+│           │                                                       │
+│           ▼                                                       │
+│  ┌─────────────────┐                                             │
+│  │  SIGN & BROADCAST│ ← Standard Bitcoin from here              │
+│  └─────────────────┘                                             │
+│                                                                   │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 3. Trust Model and Evaluator Authority
+
+### 3.1 The Core Question
+
+BPC introduces external evaluation before transaction construction. This raises an immediate question:
+
+**"Who runs the evaluator, and why should I trust it?"**
+
+---
+
+### 3.2 What Evaluators Do
+
+Evaluators perform deterministic verification:
+
+- Check that evidence is valid (signatures verify, proofs are well-formed)
+- Check that time evidence is current (Epoch Clock verification)
+- Check that all required conditions are present
+- Output ALLOW, DENY, or LOCKED based on deterministic rules
+
+**Evaluators do NOT:**
+
+- Hold funds or keys
+- Have custody or control over Bitcoin
+- Make subjective judgments
+- Have discretion in decision-making
+- Compel or prevent signing
+- Execute or broadcast transactions
+
+---
+
+### 3.3 Comparison to Miner Trust Assumptions
+
+Bitcoin already relies on miners for transaction inclusion. Miners have significant power:
+
+- Can refuse to include any transaction
+- Can reorder transactions within blocks
+- Can front-run transaction content
+- Have temporary exclusive visibility during private relay (Seal-360)
+
+**Yet Bitcoin considers this acceptable because:**
+
+1. Miners cannot steal funds (don't control keys)
+2. Miners cannot prevent execution permanently (fallback to other miners)
+3. Miner behavior is economically rational (fees incentivize inclusion)
+4. Miner power is temporary (only during block construction)
+
+**BPC evaluators have LESS power than miners:**
+
+1. Evaluators cannot steal funds (don't control keys)
+2. Evaluators cannot prevent execution permanently (user can bypass BPC)
+3. Evaluator behavior is deterministic (no economic discretion)
+4. Evaluator power is temporary (only during authorization phase)
+
+**Additional protections:**
+
+- Evaluator logic is open-source and auditable
+- Multiple evaluators can be used (quorum)
+- Evaluation is deterministic (same inputs = same output)
+- Signers verify outcomes independently (no blind trust)
+- Users retain sovereignty (can refuse to use BPC)
+
+---
+
+### 3.4 Sovereignty Preservation
+
+BPC preserves Bitcoin's core principle: the signer is sovereign.
+
+**Evaluators cannot:**
+
+- Compel signing
+- Infer consent
+- Proceed on behalf of key holder
+- Override signer refusal
+
+**Signers retain final control:**
+
+- Signer receives outcome for independent verification
+- Signer checks signature on outcome
+- Signer checks all binding fields match
+- Signer checks outcome not expired or replayed
+- Signer approves final transaction before signing
+- Signer can refuse at any point
+
+**If evaluator misbehaves:**
+
+- Signer detects mismatch and refuses
+- No transaction is constructed
+- No funds are at risk
+- User can bypass BPC entirely for future transactions
+
+---
+
+### 3.5 Comparison to Trusted Third Parties
+
+**Traditional trusted third party:**
+
+- Holds funds or keys
+- Has custody and control
+- Can unilaterally execute transactions
+- Single point of failure
+- Breach results in fund loss
+
+**BPC Evaluator:**
+
+- Holds no funds or keys
+- Has no custody or control
+- Cannot execute transactions
+- Can be redundant (multiple evaluators)
+- Breach results in denial, not theft
+
+**Key distinction:** BPC evaluators verify evidence, they do not control assets.
+
+---
+
+### 3.6 Time Authority (Epoch Clock)
+
+BPC requires verifiable time for:
+
+- Expiry enforcement
+- Replay prevention
+- Temporal ordering
+
+**Time source:** Epoch Clock v2, anchored to Bitcoin via inscription.
+
+**Epoch Clock properties:**
+
+- Profile inscribed on Bitcoin blockchain (immutable reference)
+- Tick progression cryptographically signed
+- Multiple mirrors provide redundancy
+- Agreement protocol requires mirror consensus
+- No single point of failure
+
+**If Epoch Clock unavailable:**
+
+- Evaluation emits LOCKED
+- Execution refuses
+- No fallback to system time
+- Fail-closed behavior preserved
+
+**Rationale:**
+
+Time authority already exists in Bitcoin:
+
+- Block timestamps establish temporal ordering
+- Miners control time within consensus rules
+- Locktimes depend on block height or timestamps
+
+BPC uses Bitcoin-anchored time via inscription, maintaining consistency with Bitcoin's existing time model.
+
+---
+
+### 3.7 Multi-Evaluator Quorum (Optional)
+
+For increased assurance, deployments MAY use multiple evaluators:
+
+**Quorum model:**
+
+- M-of-N evaluators must emit ALLOW
+- All ALLOW outcomes must have identical bindings
+- Any DENY causes overall DENY
+- Any LOCKED causes overall LOCKED
+
+**Benefits:**
+
+- Tolerates individual evaluator failure
+- Reduces single evaluator trust
+- Increases availability (if some evaluators down)
+
+**Trade-offs:**
+
+- Increased complexity
+- Higher latency
+- Coordination overhead
+
+Quorum is OPTIONAL. Single evaluator is conformant.
+
+---
+
+### 3.8 Trust Summary
+
+BPC introduces authorization verification, not asset custody.
+
+Evaluators verify evidence deterministically using the same rules available to all participants.
+
+Signers independently verify all outcomes before signing.
+
+Users retain sovereignty and can bypass BPC if evaluator behavior is unacceptable.
+
+This trust model is comparable to Bitcoin's existing reliance on miners for transaction inclusion.
+
+---
+
+### 3.9 Design Rationale and Common Objections (Non-Normative)
+
+This section addresses predictable review objections that arise from misunderstanding Bitcoin Pre-Contracts’ authority model, evaluator role, and execution semantics.
+Nothing in this section introduces new requirements or modifies any normative rule in this specification.
+
+---
+
+#### Does BPC add trust in evaluators?
+
+No.
+
+Evaluators in BPC do not gain custody, execution authority, or signing capability.
+
+* Evaluators cannot construct transactions.
+* Evaluators cannot sign transactions.
+* Evaluators cannot broadcast transactions.
+* Evaluators cannot compel execution.
+
+Evaluators verify evidence and emit an authorization outcome. Execution remains under signer control and is enforced locally by the wallet and signer.
+
+If an evaluator misbehaves, produces an invalid outcome, or becomes unavailable, execution is refused. No funds are at risk.
+
+---
+
+#### Does BPC centralise transaction control?
+
+No.
+
+BPC preserves signer sovereignty and Bitcoin’s censorship resistance.
+
+* BPC is optional and may be bypassed entirely by the user.
+* Authorization does not guarantee execution.
+* Execution requires independent signer verification at signing time.
+
+No evaluator can permanently block execution, because users retain the ability to construct and broadcast standard Bitcoin transactions without BPC.
+
+BPC governs whether a transaction may exist, not whether Bitcoin will accept it.
+
+---
+
+#### Why is authorization enforced before construction?
+
+Because construction itself creates risk.
+
+Once a broadcast-valid transaction exists, control over execution timing is lost. BPC eliminates this risk by enforcing authorization before any spend artifact exists.
+
+On-chain mechanisms cannot prevent premature construction, cached signatures, or deferred broadcast. This invariant must be enforced in the wallet and signer execution path.
+
+BPC reorders authority without changing Bitcoin consensus.
+
+---
+
+#### Why is this not implemented in Script or consensus?
+
+Because BPC does not govern validity. It governs existence.
+
+* Script enforces spending conditions after construction.
+* Consensus validates transactions after broadcast.
+* Neither can prevent a signed transaction from existing prematurely.
+
+BPC operates entirely off-chain to control execution timing and authority boundaries without introducing global consensus risk.
+
+---
+
+#### Isn’t this too complex for wallets?
+
+Security systems are evaluated by how they constrain failure.
+
+BPC confines complexity to a small number of well-defined components:
+
+* intent declaration,
+* deterministic evaluation,
+* execution gating,
+* signer verification.
+
+The alternative is implicit complexity spread across UI conventions, trust assumptions, and informal agreements.
+
+BPC replaces informal trust with explicit, auditable control.
+
+---
+
+#### What if the evaluator is unavailable or malicious?
+
+BPC fails closed.
+
+* Missing or unverifiable evidence results in denial or lock.
+* Expired or replayed outcomes are refused.
+* Invalid signatures are rejected by the signer.
+
+No transaction is constructed in these cases. No funds are exposed.
+
+Evaluator failure prevents execution. It does not create execution risk.
+
+---
+
+#### Does BPC weaken Bitcoin’s trust model?
+
+No.
+
+BPC does not introduce:
+
+* custody delegation,
+* execution delegation,
+* inclusion guarantees,
+* new consensus assumptions.
+
+It preserves Bitcoin’s core principle: only the signer authorises spending.
+
+BPC enforces when authority may be exercised, not who holds it.
+
+---
+
+#### Is BPC required for all transactions?
+
+No.
+
+BPC is intended for transactions where premature execution is unacceptable, including:
+
+* high-value settlement,
+* policy-governed treasury operations,
+* time-bounded releases,
+* multi-party approval flows.
+
+Simple transactions remain better served by standard Bitcoin workflows. 
+
+---
+
+## 4. Core Protocol
+
+### 4.1 Core Security Invariant (Normative)
+
+The following invariant MUST hold for any conformant implementation:
+
+> **No broadcast-valid spend artifact may exist before authorization succeeds.**
 
 This includes:
-- Fully formed transactions
-- Partially signed PSBTs
+
+- Raw transactions
+- Partially signed PSBTs with sufficient signatures
 - Recoverable signing material
-- Any artifact that could be finalized into a valid spend without re-evaluation
+- Any artifact that could be finalized without re-evaluation
+
+Violation of this invariant is critical non-conformance.
 
 ---
 
-#### Invariant 2 — Deterministic Evaluation
+### 4.2 PreContractIntent
 
-Given identical canonical inputs:
-- `PreContractIntent`
-- `EvidenceBundle`
-- Verified Epoch Clock tick bytes
-- Declared policy configuration
+Declares what transaction may be constructed.
 
-The evaluation result (ALLOW/DENY/LOCKED) MUST be identical across:
-- Executions
-- Machines
-- Implementations
-- Time (within validity windows)
+**Properties:**
 
-Any divergence constitutes a correctness failure.
+- Non-authoritative (not a transaction)
+- Safe to publish (contains no signing material)
+- Content-addressed (intent_hash binds structure)
+- Time-bounded (expiry_t enforces validity window)
 
----
-
-#### Invariant 3 — Fail-Closed on Ambiguity
-
-If any required input is:
-- Missing
-- Stale
-- Malformed
-- Unverifiable
-- Ambiguous
-
-The system MUST refuse authorization.
-
-There MUST be no fallback, default-allow, or "best effort" execution path.
-
----
-
-#### Invariant 4 — Binding Integrity
-
-An `ALLOW` outcome MUST be bound to:
-- A specific intent (`intent_hash`)
-- A specific contract context (`contract_id`, `session_id`)
-- A specific transaction structure (`bound_psbt_hash`)
-
-Any mutation or substitution after authorization MUST be detected and refused.
-
----
-
-#### Invariant 5 — Single-Use Authorization
-
-Each authorization outcome (`decision_id`) MUST be:
-- Usable at most once
-- Time-bounded by `valid_until_t`
-- Permanently rejected after use or expiry
-
-Replay or reuse MUST be detected and denied.
-
----
-
-#### Invariant 6 — Time Authority Exclusivity
-
-All time-based decisions MUST derive exclusively from verified Epoch Clock artifacts.
-
-System clocks, NTP, DNS time, or inferred wall time MUST NOT influence:
-- Expiry evaluation
-- Freshness checks
-- Authorization validity
-
-If verified time is unavailable, the correct behavior is refusal.
-
----
-
-#### Invariant 7 — Sovereign Signing
-
-BPC MUST NOT compel signing.
-
-The final act of signing remains under the control of the key holder. BPC provides refusal logic and authorization discipline only.
-
-Any implementation that removes, bypasses, or obscures signer sovereignty is non-conformant.
-
----
-
-These invariants define the **minimum security posture** of BPC. Implementations MAY provide stronger guarantees, but MUST NOT weaken or bypass any invariant defined above.
-
----
-
-## 1.7 Implementation Classes (Informative)
-
-This specification supports multiple conformant implementation classes. Not all implementations are required to implement all components, provided the security invariants in Section 1.6.2 are preserved.
-
-The following classes are illustrative, not exhaustive.
-
----
-
-#### Class A — Wallet-Only Enforcement
-
-A wallet-only implementation:
-
-- Evaluates BPC authorization locally
-- Enforces refusal semantics before signing
-- Constructs and signs transactions only after ALLOW
-- Does not expose spend-authorizing artifacts pre-authorization
-
-This class:
-- Requires no external evaluator
-- Is suitable for personal custody and single-operator use
-- Preserves full signer sovereignty
-
-Typical components:
-- PreContractIntent evaluation
-- Evidence verification
-- Epoch Clock client
-- PSBTTemplateCanonical binding
-- Local replay protection
-
----
-
-#### Class B — External Evaluator + Wallet Execution
-
-A split implementation where:
-
-- An external evaluator performs deterministic evaluation
-- The evaluator issues signed ALLOW/DENY/LOCKED outcomes
-- Wallets independently verify outcomes before signing
-- Execution remains wallet-controlled
-
-This class:
-- Allows organizational separation of duties
-- Supports policy centralization without custody centralization
-- Requires no trust in the evaluator beyond signature verification
-
-Typical components:
-- External evaluation service
-- Signed PreContractOutcome
-- Wallet-side verification and execution gating
-- Independent Epoch Clock verification on both sides
-
----
-
-#### Class C — Multi-Evaluator Quorum
-
-An implementation using multiple independent evaluators:
-
-- Requires M-of-N evaluator agreement
-- Aggregates multiple signed outcomes
-- Proceeds only when quorum conditions are met
-- Tolerates individual evaluator failure or compromise
-
-This class:
-- Reduces single-evaluator risk
-- Is suitable for institutional or high-value operations
-- Preserves deterministic evaluation by requiring identical inputs
-
-Typical components:
-- Multiple evaluator services
-- Outcome aggregation logic
-- Quorum policy enforcement
-- Wallet-side verification of all bindings
-
----
-
-#### Class D — Full-Stack Integrated Enforcement
-
-A full-stack implementation combining:
-
-- Intent creation
-- Evaluation
-- Execution
-- Audit logging
-- Policy management
-
-This class:
-- Is suitable for tightly controlled environments
-- Still MUST preserve signer sovereignty
-- MUST NOT collapse evaluation and signing authority
-
-Typical components:
-- Integrated BPC evaluator
-- Wallet execution engine
-- Audit ledger
-- Policy management interface
-
----
-
-#### Non-Conformant Classes
-
-The following are **explicitly non-conformant**:
-
-- Implementations that auto-sign without enforceable refusal
-- Implementations that treat evaluator output as authoritative without verification
-- Implementations that allow transaction construction before ALLOW
-- Implementations that bypass PSBT template binding
-- Implementations that collapse signer and policy authority without auditability
-
----
-
-This section is informational and does not introduce new requirements. All implementation classes MUST satisfy the security invariants defined in Section 1.6.2.
-
----
-
-## 1.8 Trust Boundary Between Host, Evaluator, and Signer (Normative)
-
-BPC explicitly assumes that **host software is untrusted**.
-
-A conformant implementation MUST enforce the following trust boundary:
-
-1. **The signer is the final authority.**  
-   A signing component (including a hardware wallet, secure enclave, or air-gapped signer) MUST independently verify that a valid `PreContractOutcome` authorizing the operation is present before producing any signature.
-
-2. **Host software MUST NOT be trusted to enforce refusal.**  
-   The host MAY perform evidence collection, evaluation, and Pre-Contract assembly, but its output MUST be treated as advisory until verified by the signer.
-
-3. **A signer MUST refuse to sign if any of the following are true:**
-   - No `PreContractOutcome` is presented
-   - The `PreContractOutcome` signature is invalid
-   - The `bound_intent_hash` does not match `PreContractIntent.intent_hash`
-   - The `bound_session_id` or `bound_contract_id` do not match the active operation context
-   - The outcome is expired (`current_t >= valid_until_t`)
-   - The outcome is replayed (`decision_id` already used)
-   - The outcome `decision` is not `ALLOW`
-   - The `bound_psbt_hash` does not match the computed hash of the canonical template
-
-4. **PSBT export prior to outcome binding is non-conformant.**  
-   Any implementation that allows a spend-authorizing PSBT (or any artifact containing signatures or witness/final scripts for the primary spend) to be exported, persisted, or transmitted before `ALLOW` is issued is non-conformant.
-
-5. **Bypass visibility requirement.**  
-   If an implementation permits an explicit manual bypass (for example, raw PSBT export), it MUST:
-   - Require an explicit, audited override action
-   - Mark the resulting artifact as policy-violating
-   - Disable claims of BPC conformance for that operation
-
-This trust boundary preserves the core invariant:
-
-> no broadcast-valid spend artifact exists until preconditions are satisfied.
-
----
-
-## 2. Dependency and Authority Boundary
-
-### 2.1 Bitcoin Boundary (Normative)
-
-**Bitcoin remains the sole authority for transaction validity and settlement finality.**
-
-BPC does not add on-chain logic and does not create Bitcoin-layer vulnerabilities. Transactions produced after BPC evaluation are standard Bitcoin transactions subject only to Bitcoin consensus rules.
-
-BPC operates entirely off-chain in the construction phase. Once a transaction is broadcast, BPC has no further role. Enforcement is complete at the refusal-to-construct gate.
-
-### 2.2 Epoch Clock v2 Boundary (Normative)
-
-BPC uses Epoch Clock v2 for all time semantics.
-
-**Pinned canonical profile_ref (MUST):**
-
-
-```
-"ordinal:439d7ab1972803dd984bf7d5f05af6d9f369cf52197440e6dda1d9a2ef59b6ebi0"
-```
-
-**Time Authority Philosophy:**
-
-Epoch Clock does not create a new time oracle. It anchors time profile authority to a Bitcoin inscription and makes time artifacts cryptographically verifiable against that immutable anchor.
-
-The profile is inscribed on Bitcoin (immutable), and ticks are signed with cryptographic signatures as defined by the pinned Epoch Clock profile (which MAY include post-quantum schemes).
-
-Mirrors provide **verification redundancy**, not consensus. No single mirror is authoritative; clients validate locally.
-
-Epoch Clock artifacts are **JCS Canonical JSON bytes** and:
-
-* MUST be treated as **externally canonical opaque bytes**
-* MUST NOT be re-encoded into CBOR or any other format
-* MUST be fetched and accepted according to the mirror agreement protocol in Section 2.2.4
-* MUST NOT use system clocks, NTP, DNS time, or wall clocks for any authority decision
-
-On mirror divergence, unavailable ticks, or profile mismatch, the system MUST fail closed.
-
-#### 2.2.1 Time Field Definition (Normative)
-
-Epoch Clock `EpochTick` contains:
-
-* `t` (uint): **Strict Unix Time** in seconds (1970-01-01T00:00:00Z, ignoring leap seconds)
-
-All BPC time values are expressed as Unix seconds and MUST be compared against the verified Epoch Clock `t`.
-
-Accordingly, BPC uses the suffix `_t` for Unix-seconds fields:
-
-* `expiry_t`, `issued_t_hint`, `issued_t`, `valid_until_t`, `current_t`
-
-For evaluation and execution, `current_t` MUST be derived exclusively from the verified Epoch Clock tick value `t` for the operation attempt (i.e. `current_t = EpochTick.t`). No other time source is permitted.
-
-#### 2.2.2 Tick Reuse Window (Normative)
-
-BPC permits limited reuse of the most recently validated Epoch Clock tick to support offline and partition-tolerant operation, while preventing indefinite operation on stale time.
-
-Let:
-
-- `tick_cached` be the most recently validated `EpochTick` (as canonical JCS JSON bytes)
-- `validated_at_mono_ms` be the local **monotonic** timestamp (milliseconds) recorded at the moment `tick_cached` was validated
-
-`current_t` is the authoritative Unix-seconds time value asserted by the most recently verified Epoch Clock tick.
-
-`current_t` MUST be used only for evaluation and binding purposes.
-
-`current_t` MUST NOT be used to infer time progression, determine freshness, or substitute for a new Epoch Clock tick.
-
-**Reuse rule (MUST):**
-
-1. Implementations MAY reuse `tick_cached` only while:
-
-```
-mono_now_ms - validated_at_mono_ms <= 900000
-```
-
-2. If the monotonic delta exceeds 900 seconds, the implementation MUST treat time as unavailable for all time-dependent operations and MUST fail closed.
-
-3. If a monotonic clock is unavailable or cannot be trusted as monotonic, the implementation MUST treat time as unavailable and MUST fail closed.
-
-**No authority claim:**
-
-- The monotonic timer is used solely to enforce the maximum reuse duration
-- It MUST NOT be used to compute, compare, or infer Unix time values
-
-**Rationale:**  
-Epoch Clock provides time authority; the monotonic timer enforces only a bounded reuse cutoff. This preserves deterministic refusal semantics during partitions without introducing wall-clock authority.
-
----
-
-#### 2.2.3 Epoch Clock Failure Propagation (Normative)
-
-BPC treats verifiable time as a hard security dependency for all time-bound operations.
-
-1. If a valid Epoch Tick cannot be obtained and validated — including cases of mirror divergence, profile mismatch, invalid signature, or reuse-window expiry — the evaluator MUST emit `decision = "LOCKED"` with an appropriate `reason_code` in the `E_TICK_*` or `E_MIRROR_*` error families.
-
-2. The executor MUST treat `decision = "LOCKED"` as refusal and MUST NOT construct, sign, or broadcast any transaction.
-
-3. No local fallback is permitted. System clocks, NTP, DNS time, block timestamps, or application-provided time MUST NOT be used as substitutes for Epoch Clock artifacts.
-
-This preserves a single interpretation: `LOCKED` represents fail-closed unavailability, while refusal is the execution posture.
-
-#### 2.2.4 Mirror Agreement Protocol (Normative)
-
-Epoch Clock ticks MUST be accepted only when sufficient independent mirror agreement is achieved.
-
-This section defines the minimum protocol required to determine agreement.
-
-##### Query Requirements
-
-1. Implementations MUST query **at least three** independent Epoch Clock mirrors.
-2. Mirrors MUST be queried using the pinned `profile_ref`.
-3. Each mirror response MUST be validated independently for:
-   - profile_ref match
-   - JCS canonical encoding
-   - Signature validity
-
-##### Agreement Rule
-
-1. A tick is considered **valid** only if **two or more mirrors return byte-identical `tick_bytes`**.
-2. Agreement is defined strictly by **byte equality**, not by semantic equality of parsed fields.
-3. If no such agreement is reached, the evaluator MUST fail closed with `E_MIRROR_DIVERGENCE`.
-
-##### Partial Responses
-
-1. If fewer than two mirrors return a response within the implementation-defined timeout window, the evaluator MUST fail closed with `E_TICK_MISSING`.
-2. If responses are received but no byte-identical pair exists, the evaluator MUST fail closed with `E_MIRROR_DIVERGENCE`.
-
-##### Retry Behavior
-
-1. Implementations MAY query additional mirrors beyond the initial set.
-2. Acceptance MUST occur only after meeting the agreement rule above.
-3. If agreement cannot be reached before the reuse window expires, the evaluator MUST emit `decision = "LOCKED"`.
-
-##### Authority Boundary
-
-Mirror agreement provides **verification redundancy only**. Mirrors do not vote, elect leaders, or form consensus. All authority remains local to the verifier.
-
-This protocol ensures deterministic, replay-safe time verification without introducing a new consensus layer.
-
-### 2.3 Mempool Observation Disclaimer (Normative)
-
-If implementations use mempool observation as evidence:
-
-* It MUST be treated as **non-authoritative risk signal only**
-* It MUST NOT be the sole basis for ALLOW
-* Implementations MUST NOT make guarantees based on mempool visibility
-* Mempool data is incomplete, adversarially influenceable, and not consensus-backed
-
-**Rationale:** Mempool state is probabilistic and attackers control their own propagation behavior.
-
----
-
-## 3. Architecture Overview
-
-BPC defines a three-phase model:
-
-1. **Intent** (non-authoritative, safe to publish)
-2. **Evaluation** (deterministic precondition checks)
-3. **Execution** (construct + sign + broadcast via wallet)
-
-No executable transaction exists before ALLOW.
-
-```
-App / UI
-→ PreContractIntent (what needs to happen)
-→ EvidenceBundle (proof that conditions are met)
-→ PreContractOutcome (ALLOW / DENY / LOCKED)
-→ (only if ALLOW) PSBTTemplateCanonical finalized → PSBT constructed → signed → broadcast
-```
-
-### 3.1 Phases Explained
-
-**Intent Phase:**
-- Application declares what transaction it wants to construct
-- Intent includes contract terms, expiry, required evidence types
-- Intent is safe to share publicly, contains no secrets or spend-authorizing signatures
-- Intent is content-addressed via `intent_hash`
-
-**Evaluation Phase:**
-- Evaluator receives intent + evidence bundle
-- Verifies all evidence deterministically
-- Checks time bounds via Epoch Clock
-- Validates approvals, proofs, policy constraints
-- Emits signed outcome with short validity window
-
-**Execution Phase:**
-- Executor receives intent + outcome + PSBTTemplateCanonical
-- Verifies outcome signature and expiry
-- Enforces all bindings (intent_hash, session_id, bound_psbt_hash)
-- Constructs transaction only if ALLOW
-- Signs and broadcasts via standard wallet flow
-
----
-
-## 4. Normative Keywords
-
-MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT, SHOULD, SHOULD NOT, MAY, OPTIONAL follow RFC 2119 meaning.
-
-Additionally:
-
-* **RECOMMENDED** indicates best practice that should be followed absent strong reason
-* **NOT RECOMMENDED** indicates practice that should be avoided absent strong reason
-
----
-
-## 5. Deterministic Encoding Rules
-
-### 5.1 BPC-native Objects (Normative)
-
-All BPC-native objects that are hashed or signed MUST be encoded using **Deterministic CBOR** (DetCBOR):
-
-* Canonical key ordering (lexicographic by encoded byte value)
-* Definite-length encoding only
-* Unique map keys (no duplicates)
-* No floats (use fixed-point integers represented as integers with defined scale)
-* Smallest possible integer representation
-
-### 5.2 Epoch Clock Objects (Normative)
-
-Epoch Clock artifacts MUST be handled as **externally canonical**:
-
-* Stored and compared as **opaque JCS JSON byte strings**
-* Verified against the pinned profile_ref
-* MUST NOT be re-serialized into CBOR by BPC implementations
-* MUST NOT be parsed and re-emitted using non-JCS tooling
-
-**Rationale:** Epoch Clock defines its own canonical encoding. Transcoding risks introducing divergence and breaking signature verification.
-
-### 5.3 Hash Functions (Normative)
-
-Unless otherwise specified:
-
-* All hashes MUST use **SHA-256**
-* Hash inputs MUST be the canonical DetCBOR encoding of the object
-* Hash outputs are 32-byte values represented as byte strings
-
----
-
-## 6. Core Objects
-
-### 6.1 PreContractIntent (Non-authoritative)
-
-Intent is safe to publish and MUST NOT contain:
-
-* Signatures that authorize spending
-* Spend-time secrets (private keys, signing material)
-* Finalized raw transactions
-* Any artifact that would make the primary spend broadcast-valid
-
-**Fields (DetCBOR):**
+**Structure:**
 
 ```
 PreContractIntent = {
-  version: uint,                     ; schema version (currently 1)
-  contract_id: bstr(16..32),         ; unique contract identifier
-  issued_t_hint: uint / null,        ; OPTIONAL non-authoritative hint (unix seconds)
-  expiry_t: uint,                    ; unix seconds, evaluated using verified EpochTick.t
-  session_id: bstr(16..32),          ; binds evaluation context
-  intent_body: map,                  ; contract-specific payload
-  intent_hash: bstr(32)              ; SHA-256(DetCBOR(intent_without_hash))
+  version: 1,
+  contract_id: bstr,              // Unique contract identifier
+  expiry_t: uint,                 // Epoch Clock tick (expiry)
+  session_id: bstr,               // Unique session identifier
+  intent_body: {
+    psbt_template: PSBTTemplateCanonical,
+    conditions: {
+      required_approvals: [* ApprovalRequirement] / null,
+      required_proofs: [* ProofRequirement] / null,
+      time_constraints: TimeConstraints / null
+    }
+  },
+  intent_hash: bstr(32)           // SHA-256(DetCBOR(intent without hash))
 }
 ```
 
-**Validation Rules (Normative):**
+**Canonical hash computation:**
 
-1. `intent_hash` MUST recompute correctly as SHA-256(DetCBOR(intent with intent_hash field removed))
-2. `version` MUST equal 1 (reject unknown versions)
-3. `contract_id` MUST be unique within system scope
-4. `expiry_t` MUST be enforced using verified Epoch Clock `t` only
-5. If `issued_t_hint` is present and `expiry_t <= issued_t_hint`, evaluators SHOULD reject with `E_INTENT_INVALID_WINDOW` as structural sanity check
+```
+canonical_bytes = DetCBOR(intent excluding intent_hash field)
+intent_hash = SHA-256(canonical_bytes)
+```
 
-**Rationale for issued_t_hint:** Allows early rejection of obviously malformed intents without needing verified tick. Authority remains with verified time comparisons.
+**Validation rules:**
+
+- version MUST be 1
+- contract_id MUST be unique per contract
+- expiry_t MUST be Epoch Clock tick (not Unix timestamp)
+- session_id MUST be unique per evaluation attempt
+- intent_hash MUST match computed hash
+- psbt_template MUST be PSBTTemplateCanonical (Section 4.3)
+- conditions MUST be verifiable deterministically
+- Intent MUST NOT contain signatures, witnesses, or signing material
 
 ---
 
-### 6.2 EpochTickBytes (Evidence)
+### 4.3 PSBTTemplateCanonical
 
-Epoch tick evidence MUST be carried as:
+Defines authorized transaction structure without signatures.
 
-```
-EpochTickBytes = {
-  profile_ref: tstr,                 ; MUST equal pinned canonical ref
-  encoding: tstr,                    ; MUST equal "JCS-JSON"
-  tick_bytes: bstr                   ; exact JCS canonical JSON bytes
-}
-```
-
-**Validation Rules (Normative):**
-
-1. `profile_ref` MUST equal `"ordinal:439d7ab1972803dd984bf7d5f05af6d9f369cf52197440e6dda1d9a2ef59b6ebi0"`
-2. `encoding` MUST equal `"JCS-JSON"`
-3. `tick_bytes` MUST be the exact JCS canonical JSON bytes of a valid EpochTick
-4. Implementations MUST validate tick authenticity per Epoch Clock v2 rules:
-   - Verify ML-DSA-65 signature over tick_bytes
-   - Verify profile lineage and governance rules
-   - Verify mirror agreement per Section 2.2.4
-   - Enforce reuse window semantics as in Section 2.2.2
-
----
-
-### 6.3 EvidenceBundle (Normative)
-
-`EvidenceBundle` is the complete, canonical input set used for deterministic precondition evaluation.
-
-An `EvidenceBundle` MUST include verifiable time evidence. There is no time-optional evaluation mode in BPC.
-
-```
-EvidenceBundle = {
-  version: uint,                     ; schema version (currently 1)
-  contract_id: bstr(16..32),         ; MUST match intent.contract_id
-  intent_hash: bstr(32),             ; MUST match intent.intent_hash
-
-  epoch_tick: EpochTickBytes,        ; REQUIRED
-
-  approvals: [* Approval] / null,    ; OPTIONAL
-  attestations: map / null,          ; OPTIONAL external attestations
-  external_proofs: map / null,       ; OPTIONAL (receipts, oracle proofs)
-  extra: map / null                  ; OPTIONAL extension point
-}
-```
-
-**Approval Structure:**
-
-```
-Approval = {
-  approver_id: tstr,                 ; identifier for approver (pubkey or role)
-  role: tstr,                        ; role name for policy evaluation
-
-  approval_t: uint,                  ; Unix seconds derived from Epoch Clock
-                                     ; at approval creation time
-
-  scope_hash: bstr(32),              ; binds approval to specific scope
-  signature_input: bstr,             ; DetCBOR(ApprovalCommitment)
-  sig: bstr,                         ; signature over signature_input
-  sig_alg: tstr                      ; signature algorithm identifier
-}
-
-ApprovalCommitment = {
-  intent_hash: bstr(32),
-  contract_id: bstr(16..32),
-  session_id: bstr(16..32),
-  role: tstr,
-  scope_hash: bstr(32),
-  approval_t: uint
-}
-```
-
-#### 6.3.1 Approval Time Semantics (Normative)
-
-Approvals MAY include a time marker to constrain replay and ordering. All approval timing semantics are evaluated **exclusively** against verified Epoch Clock time.
-
-##### Time Authority Requirement
-
-1. `approval_t` MUST be derived from a **verified Epoch Clock tick** at the time the approval is created.
-2. Implementations MUST NOT derive `approval_t` from:
-   - System clocks
-   - Wall clocks
-   - NTP
-   - Inferred or approximate time sources
-
-##### Approval Validation Rules (Normative)
-
-An approval is valid only if **all** of the following hold:
-
-1. The signature verifies over `ApprovalCommitment`.
-2. `approval_t <= current_t` (approval is not from the future).
-3. If `issued_t_hint` is present in the intent:
-   - `approval_t >= issued_t_hint` MUST hold as a structural sanity check.
-4. `approval_t < intent.expiry_t` MUST hold.
-5. All binding fields (`intent_hash`, `contract_id`, `session_id`, `role`, `scope_hash`) MUST match the active evaluation context.
-
-If any rule fails, the evaluator MUST treat the approval as invalid and proceed according to policy (typically `DENY` or `LOCKED`).
-
-##### Rationale
-
-Approvals are security-critical evidence. Allowing approvals to carry timestamps derived from local clocks would reintroduce nondeterminism and downgrade risk. By binding approval time to Epoch Clock authority, approval ordering and replay constraints remain deterministic and verifiable across implementations.
-
-#### Approval Signature Algorithms (Normative)
-
-Implementations MUST:
-
-- Declare supported `sig_alg` values in conformance metadata
-- Fail closed on unknown `sig_alg`
-
-Implementations SHOULD support at minimum:
-
-- `"ECDSA-secp256k1-SHA256"`
-- `"Ed25519"`
-
-Implementations MAY additionally support:
-
-- `"ML-DSA-65"`
-
-#### Approval Signature and Binding Validation Rules (Normative)
-
-1. `signature_input` MUST equal DetCBOR(ApprovalCommitment) with fields matching the Approval.
-2. `sig` MUST verify under `approver_id` pubkey using `sig_alg`.
-3. `scope_hash` MUST match expected scope for the approval (contract-specific).
-4. Approvals are evidence only. Policy determines whether approvals are sufficient.
-
-#### Validation Rules (Normative)
-
-1. `version` MUST equal 1. Unknown versions MUST be rejected.
-2. `contract_id` MUST equal `PreContractIntent.contract_id`.
-3. `intent_hash` MUST equal `PreContractIntent.intent_hash`.
-4. `epoch_tick` MUST be present and MUST be validated per Section 2.2.
-5. If `epoch_tick` is missing, invalid, stale, or unverifiable, the evaluator MUST emit `decision = "LOCKED"`.
-
-There is no conformant evaluation path that omits verifiable time.
-
-#### Rationale
-
-All BPC intents include explicit expiry semantics via `expiry_t`. Allowing evaluation without a verified time source would introduce ambiguity, downgrade risk, and divergent behavior across implementations.
-
-Accordingly, time is treated as a mandatory security input rather than an optional predicate.
-
----
-
-### 6.4 PSBTTemplateCanonical (Normative)
-
-This object defines the canonical transaction template that is bound into `PreContractOutcome.bound_psbt_hash`.
-
-A `PSBTTemplateCanonical` represents a **non-spendable transaction skeleton**. It MUST exclude all spend-authorizing material and MUST be stable across implementations.
+**Structure:**
 
 ```
 PSBTTemplateCanonical = {
-  version: uint,                     ; MUST be 1
-  inputs: [* PSBTInputTemplate],
-  outputs: [* PSBTOutputTemplate],
+  version: 1,
+  inputs: [* {
+    txid: bstr(32),
+    vout: uint,
+    sequence: uint
+  }],
+  outputs: [* {
+    script_pubkey: bstr,
+    amount_sats: uint
+  }],
   locktime: uint,
-  fee_rate_sat_vb: uint / null       ; OPTIONAL, but if present it is BINDING
-}
-
-PSBTInputTemplate = {
-  txid: bstr(32),
-  vout: uint,
-  sequence: uint
-}
-
-PSBTOutputTemplate = {
-  script_pubkey: bstr,
-  amount_sats: uint
+  fee_rate_sat_vb: uint / null    // null = not binding
 }
 ```
 
-#### Structural Rules (Normative)
+**Ordering requirements:**
 
-1. `version` MUST equal 1. Unknown versions MUST be rejected.
-2. `inputs` and `outputs` MUST be non-empty.
-3. `sequence` values fully define replaceability semantics. Implementations MUST NOT use an independent boolean or inferred flag to represent replaceability.
-4. If `fee_rate_sat_vb` is present, it MUST be treated as binding input to transaction construction.
-5. If fee is not intended to be bound, `fee_rate_sat_vb` MUST be null.
-6. Implementations MUST NOT treat a non-null `fee_rate_sat_vb` as advisory or informational.
+- Inputs MUST be sorted lexicographically by (txid, vout)
+- Outputs MUST be sorted lexicographically by (amount_sats, script_pubkey)
 
-#### Ordering Rules (Normative)
+**Exclusion requirements:**
 
-1. `inputs` MUST be sorted lexicographically by `(txid, vout)` where:
-   - `txid` is compared as raw bytes
-   - `vout` is compared as an unsigned integer when `txid` matches
+Template MUST NOT include:
 
-2. `outputs` MUST be sorted lexicographically by `(amount_sats, script_pubkey)` where:
-   - `amount_sats` is compared ascending
-   - `script_pubkey` is compared as raw bytes when amounts match
-
-#### Exclusion Rules (Normative)
-
-`PSBTTemplateCanonical` MUST NOT include:
-
-- Partial signatures
-- Final scripts or witnesses
+- Signatures
+- Witnesses
+- Final scripts
+- UTXO data
+- Key material or secrets
 - Unknown or proprietary PSBT fields
-- `non_witness_utxo` or `witness_utxo` data
-- Any key material or secrets
-- Any field whose value may vary across implementations without an explicit canonical rule
 
-If any excluded material is present in the template input provided to hashing, the implementation MUST refuse with `E_PSBT_TEMPLATE_NONCANONICAL`.
+**Replace-By-Fee semantics:**
 
-#### Binding Hash (Normative)
+RBF determined exclusively by input sequence values:
+
+- sequence < 0xFFFFFFFE → replaceable
+- sequence >= 0xFFFFFFFE → non-replaceable
+
+No independent flags permitted.
+
+**Fee binding:**
+
+- If fee_rate_sat_vb is uint → binding (final transaction MUST match rate within tolerance)
+- If fee_rate_sat_vb is null → not binding (any fee acceptable)
+
+**Template hash computation:**
 
 ```
-bound_psbt_hash = SHA-256(DetCBOR(PSBTTemplateCanonical))
+canonical_bytes = DetCBOR(psbt_template)
+template_hash = SHA-256(canonical_bytes)
 ```
 
-### 6.4.1 PSBTTemplateCanonical Enforcement Rules (Normative)
-
-A `PSBTTemplateCanonical` represents a **non-spendable transaction skeleton** that MAY be evaluated but MUST NOT be signed or broadcast.
-
-The executor and signer MUST enforce the following rules prior to execution.
-
-#### 1. Spend-Authorization Prohibition
-
-A canonical PSBT template MUST contain **no spend-authorizing material**.
-
-Specifically, it MUST NOT include:
-
-- Signatures of any kind
-- Witness data
-- Finalized scripts
-- Key paths or script paths indicating finalization
-- Proprietary, vendor-specific, or unknown PSBT fields
-
-Presence of any such material MUST result in refusal with `E_PSBT_TEMPLATE_NONCANONICAL`.
-
-#### 2. Deterministic Ordering Enforcement
-
-Implementations MUST enforce deterministic ordering exactly as follows:
-
-- Inputs sorted lexicographically by `(txid, vout)`
-- Outputs sorted lexicographically by `(amount_sats, script_pubkey)`
-- All internal maps sorted per canonical DetCBOR rules
-
-Any deviation MUST result in refusal.
-
-#### 3. Fee Binding Semantics
-
-Fee handling MUST be **unambiguous**.
-
-- If `fee_rate_sat_vb` is present in `PSBTTemplateCanonical`, it MUST be treated as binding input to transaction construction.
-- If fee is not intended to be bound, `fee_rate_sat_vb` MUST be null.
-- Implementations MUST NOT interpret any fee-related field as advisory, informational, or best-effort.
-
-Mixed fee semantics are forbidden.
-
-#### 4. Canonical Encoding Stability
-
-The canonical DetCBOR encoding of `PSBTTemplateCanonical` MUST be byte-stable.
-
-- Decode → encode cycles MUST produce byte-identical output.
-- Two independent implementations given the same semantic input MUST produce identical canonical bytes.
-
-Failure to meet this requirement MUST result in refusal.
-
-#### 5. Enforcement Outcome
-
-Any violation of the rules in this section MUST result in refusal with `E_PSBT_TEMPLATE_NONCANONICAL`.
-
-There MUST be no fallback, downgrade, or partial acceptance behavior.
-
-### 6.4.2 Reference Canonicalizer Guidance (Informative)
-
-Implementations SHOULD provide:
-
-- A reference PSBT canonicalizer
-- Canonicalization test vectors
-- A conformance mode that verifies:
-  - Canonical bytes
-  - Template hash stability
-  - Rejection of non-canonical templates
-
-PSBT canonicalization errors are expected to be the primary source of implementation defects. The correct failure mode is deterministic refusal, not fallback behavior.
-
-### 6.4.3 Replace-By-Fee (RBF) Semantics (Normative)
-
-Replace-by-Fee (RBF) behavior in BPC is determined **exclusively** by input `sequence` values contained in `PSBTInputTemplate`.
-
-1. **Authoritative definition**
-   - An input is considered replaceable iff its `sequence` value is less than `0xFFFFFFFE`.
-   - An input is considered non-replaceable iff its `sequence` value is greater than or equal to `0xFFFFFFFE`.
-
-2. **No independent flags**
-   - Implementations MUST NOT use a separate boolean, policy flag, or inferred heuristic to represent RBF state.
-   - Any independent representation of RBF outside input `sequence` values is non-conformant.
-
-3. **Binding requirement**
-   - Input `sequence` values are part of the canonical template and are therefore bound by `bound_psbt_hash`.
-   - Any mutation of `sequence` values after authorization MUST be detected and refused as a binding violation.
-
-4. **Consistency enforcement**
-   - If an implementation derives an RBF state that conflicts with the input `sequence` values, it MUST refuse with `E_PSBT_TEMPLATE_NONCANONICAL`.
-
-This rule ensures that replaceability semantics are fully deterministic, Bitcoin-native, and unambiguous across implementations.
+This hash cryptographically binds authorization to transaction structure.
 
 ---
 
-### 6.5 PreContractOutcome (Authoritative)
+### 4.4 EvidenceBundle
 
-Outcome is the signed result of evaluation.
+Supplies verifiable inputs required for authorization.
+
+**Structure:**
+
+```
+EvidenceBundle = {
+  version: 1,
+  contract_id: bstr,
+  intent_hash: bstr(32),
+  time_evidence: {
+    tick_bytes: bstr,             // JCS-canonical JSON from Epoch Clock
+    profile_ref: tstr,            // Must match pinned profile
+    validated_at_mono_ms: uint    // Local monotonic time at validation
+  },
+  approvals: [* Approval] / null,
+  proofs: {* tstr => any} / null
+}
+
+```
+
+**Time evidence (REQUIRED):**
+
+All BPC evaluations MUST include valid time evidence.
+
+**Time evidence validation:**
+
+1. profile_ref MUST match pinned profile: `ordinal:439d7ab1972803dd984bf7d5f05af6d9f369cf52197440e6dda1d9a2ef59b6ebi0`
+2. Signature MUST verify against profile's public key.
+3. tick_bytes MUST be byte-identical JCS-canonical JSON.
+4. `validated_at_mono_ms` is used solely as an ingress freshness guard to prevent replay of stale EvidenceBundles. This field MUST NOT be referenced during deterministic evaluation logic and MUST NOT influence the evaluation outcome.
+5. Tick reuse permitted only while: `mono_now_ms - validated_at_mono_ms <= 900000` (15 minutes).
+6. If time unavailable or stale, evaluation MUST emit LOCKED.
+
+---
+
+### 4.5 PreContractOutcome
+
+Signed authorization result.
+
+**Structure:**
 
 ```
 PreContractOutcome = {
-  version: uint,                     ; schema version (currently 1)
-  decision_id: bstr(16..32),         ; single-use decision identifier
-  decision: tstr,                    ; "ALLOW" / "DENY" / "LOCKED"
-  reason_code: tstr,                 ; standardized error/success code
-
-  bound_intent_hash: bstr(32),       ; binds to specific intent
-  bound_contract_id: bstr(16..32),   ; binds to specific contract
-  bound_session_id: bstr(16..32),    ; binds to evaluation session
-
-  bound_psbt_hash: bstr(32),         ; REQUIRED
-
-  issued_t: uint,                    ; unix seconds from verified EpochTick.t
-  valid_until_t: uint,               ; unix seconds, short validity window
-
-  signature_input: bstr,             ; DetCBOR(OutcomeCommitment)
-  sig: bstr,                         ; signature over signature_input
-  sig_alg: tstr,                     ; signature algorithm
-  evaluator_id: tstr                 ; identifier for evaluator (pubkey)
-}
-
-OutcomeCommitment = {
-  decision_id: bstr(16..32),
-  decision: tstr,
-  reason_code: tstr,
+  version: 1,
+  decision_id: bstr,              // Unique per decision (replay prevention)
+  decision: "ALLOW" | "DENY" | "LOCKED",
   bound_intent_hash: bstr(32),
-  bound_contract_id: bstr(16..32),
-  bound_session_id: bstr(16..32),
+  bound_contract_id: bstr,
+  bound_session_id: bstr,
   bound_psbt_hash: bstr(32),
-  issued_t: uint,
-  valid_until_t: uint
+  issued_t: uint,                 // Epoch Clock tick when issued
+  valid_until_t: uint,            // Epoch Clock tick expiry
+  denial_reason: tstr / null,     // Present if DENY or LOCKED
+  sig: bstr,
+  sig_alg: tstr
 }
 ```
 
-**Decision Values (Normative):**
+**Decision semantics:**
 
-* `"ALLOW"` - All preconditions satisfied, transaction construction permitted
-* `"DENY"` - Preconditions failed, will not be satisfied with current evidence (stable rejection)
-* `"LOCKED"` - System in fail-closed state, cannot evaluate (retry after resolution)
+- ALLOW: All conditions satisfied, construction authorized
+- DENY: One or more conditions failed, construction refused
+- LOCKED: Evaluation could not complete safely, construction refused
 
-**Outcome Validation Rules (Normative):**
+#### Decision Semantics Summary
 
-1. `decision_id` MUST be accepted at most once for execution (replay protection)
-2. If `current_t >= valid_until_t`, executor MUST refuse with `E_OUTCOME_EXPIRED`
-3. All binding fields MUST match corresponding intent/session/template values
-4. `signature_input` MUST equal DetCBOR(OutcomeCommitment)
-5. `sig` MUST verify under `evaluator_id` pubkey using `sig_alg`
-6. `bound_psbt_hash` is REQUIRED and MUST be enforced by executors
+| Decision | Meaning | When Emitted |
+|--------|--------|-------------|
+| **ALLOW** | All conditions satisfied; construction authorized | Successful evaluation |
+| **DENY** | One or more conditions failed | Policy, proof, or approval failure |
+| **LOCKED** | Evaluation could not complete safely | Time ambiguity, mirror divergence, system uncertainty |
 
-**Validity Window Guidance (Normative):**
+**Binding fields:**
 
-* `valid_until_t` SHOULD be set to `issued_t + 720` (12 minutes)
-* Implementations SHOULD NOT accept validity windows longer than 1800 seconds (30 minutes)
+Outcome cryptographically binds to:
 
-### 6.5.1 Multi-Evaluator Quorum Semantics (Normative)
+- bound_intent_hash: Specific intent evaluated
+- bound_contract_id: Specific contract
+- bound_session_id: Specific evaluation session
+- bound_psbt_hash: Specific transaction structure
 
-This section applies only to deployments using multiple independent evaluators
-(Class C implementations as described in Section 1.7).
+Any mismatch between outcome bindings and actual construction MUST refuse.
 
-#### Input Consistency Requirement
+**Single-use enforcement:**
 
-All evaluators participating in a quorum MUST evaluate **byte-identical inputs**.
+Each decision_id MAY be used exactly once for execution.
 
-Specifically, each evaluator MUST receive:
+Executors MUST maintain durable replay guard tracking used decision_ids.
 
-- the same `PreContractIntent` (verified via `intent_hash`),
-- the same `EvidenceBundle`, including **byte-identical** `epoch_tick.tick_bytes`,
-- the same canonical `PSBTTemplateCanonical` (verified via `bound_psbt_hash`).
+Attempted reuse MUST refuse with E_OUTCOME_REPLAYED.
 
-If any evaluator receives non-identical inputs, quorum evaluation is
-**non-conformant** and MUST NOT proceed.
+**Expiry enforcement:**
 
-#### Outcome Production
-
-1. Each evaluator MUST produce an independent `PreContractOutcome`.
-2. Each `PreContractOutcome` MUST use a **unique** `decision_id`.
-3. All outcomes MUST be evaluated against the same `current_t` derived from the
-   verified Epoch Clock tick.
-
-#### Quorum Satisfaction Rules
-
-Quorum is satisfied only if **M evaluators** emit  
-`decision = "ALLOW"` with **all** of the following fields identical:
-
-- `bound_intent_hash`
-- `bound_contract_id`
-- `bound_session_id`
-- `bound_psbt_hash`
-
-Quorum outcomes MUST all be **unexpired at execution time**:
+Outcome valid only while:
 
 ```
-current_t < valid_until_t
+current_t <= valid_until_t
 ```
 
-for **each** outcome participating in the quorum.
+Expired outcomes MUST refuse with E_OUTCOME_EXPIRED.
 
-#### Decision Precedence and Aggregation
+**Signature verification:**
 
-The executor MUST aggregate evaluator outcomes using the following strict
-precedence rules:
+Outcome MUST be signed by evaluator.
 
-1. **DENY precedence**  
-   If **any evaluator emits `decision = "DENY"`**, the executor MUST treat the
-   overall result as `DENY`.
+Executors MUST verify signature before accepting outcome.
 
-2. **LOCKED handling**  
-   If no `DENY` is present and **any evaluator emits `decision = "LOCKED"`**, the
-   executor MUST treat the overall result as `LOCKED`.
-
-3. **ALLOW quorum**  
-   Only if no `DENY` or `LOCKED` outcomes are present, and quorum satisfaction
-   rules are met, MAY the executor proceed with `ALLOW`.
-
-There MUST be no fallback, tie-breaking, or “best effort” behavior.
-
-#### Binding Divergence Handling
-
-If evaluators emit outcomes with **divergent binding fields**
-(e.g. differing `bound_psbt_hash` or `bound_session_id`), the executor MUST:
-
-- treat the result as **fail-closed**,
-- refuse execution,
-- and MUST NOT attempt to reconcile or select among outcomes.
-
-Such divergence indicates an implementation error or evaluator compromise.
-
-#### Execution with Quorum
-
-When quorum is used, the executor MUST:
-
-1. Independently verify the signature of **each** `PreContractOutcome`.
-2. Enforce replay protection for **all** `decision_id` values used in the quorum.
-3. Proceed to execution only if quorum conditions are met and the aggregated
-   decision is `ALLOW`.
-
-#### Determinism Violation Detection
-
-If evaluators receive identical inputs but emit different decisions or bindings,
-this constitutes a **determinism violation**.
-
-In such cases:
-
-- the system MUST fail closed,
-- execution MUST NOT proceed,
-- operators SHOULD be alerted.
-
-No automatic resolution or majority voting is permitted.
-
-
-### 6.6 Decision Mapping: DENY vs LOCKED (Normative)
-
-To ensure consistent behavior across implementations, evaluators MUST apply the following decision mapping rules.
-
-#### 1. DENY — Definitive Failure
-
-`DENY` MUST be used for **stable, definitive failures** where the intent and evidence set, as provided, cannot become valid without modification.
-
-Examples include, but are not limited to:
-
-- Intent expiry
-- Binding mismatches (intent, session, contract, or template)
-- Invalid or unverifiable signatures
-- Failed policy constraints
-- Structurally invalid or malformed evidence
-- Approvals that do not satisfy required roles or thresholds
-
-A `DENY` outcome permanently invalidates the associated intent for execution. Retrying the same intent after `DENY` is non-conformant.
-
-#### 2. LOCKED — Fail-Closed Unavailability
-
-`LOCKED` MUST be used for **fail-closed unavailability** where required dependencies cannot be safely evaluated at the time of assessment.
-
-Examples include, but are not limited to:
-
-- Inability to obtain or validate a fresh Epoch Clock tick
-- Mirror divergence or profile mismatch
-- Required evidence producers being unavailable
-- Reuse-window expiry during offline or partitioned operation
-
-A `LOCKED` outcome indicates that evaluation cannot proceed safely at the current time and that retry MAY be possible once the blocking condition is resolved.
-
-#### 3. Execution Posture
-
-Both `DENY` and `LOCKED` MUST result in refusal at execution time.
-
-The distinction exists solely to differentiate:
-
-- Permanent rejection (`DENY`)
-- Temporary unavailability (`LOCKED`)
-
-Executors MUST NOT construct, sign, or broadcast any transaction unless `decision = "ALLOW"`.
-
-This mapping prevents divergent interpretations of failure states and guarantees uniform refusal semantics across all conformant implementations.
+Signature covers canonical DetCBOR encoding of outcome excluding sig field.
 
 ---
 
-## 7. Execution Gate
+### 4.6 Deterministic Evaluation (Normative)
 
-The Execution Gate ensures:
+Evaluators MUST satisfy:
 
-* No broadcast-valid transaction exists before ALLOW
-* Finalization is attempt-scoped and atomic (construct → sign → broadcast)
-* Failures burn attempt-scoped secrets/material and require a new attempt
-* All bindings are enforced at execution time
+> **Same Intent + Same Evidence + Same Verified Time → Same Outcome**
 
-### 7.1 Required Interface (Normative)
+**Determinism requirements:**
 
-Implementations MUST provide an executor with this semantic interface:
+1. All evaluation logic MUST be deterministic.
+2. Deterministic evaluation MUST NOT reference wall-clock time, monotonic time, randomness, or external state.
+3. All time-based admissibility checks (including monotonic freshness validation) occur strictly prior to evaluation as ingress guards and are not part of the deterministic evaluation function.
+4. Same inputs MUST produce byte-identical output.
+5. Cross-platform equivalence REQUIRED.
+6. Canonical encoding stability REQUIRED.
 
-```python
-class BPCExecutor:
-    def execute(
-        self,
-        intent: PreContractIntent,
-        outcome: PreContractOutcome,
-        template: PSBTTemplateCanonical,
-        current_t: int
-    ) -> ExecutionResult:
-        """
-        MUST refuse if:
-        - outcome.decision != "ALLOW"
-        - outcome expired (current_t >= valid_until_t)
-        - outcome replayed (decision_id seen before)
-        - any binding mismatch exists
-        - SHA-256(DetCBOR(template)) != outcome.bound_psbt_hash
-        - template violates canonical rules (E_PSBT_TEMPLATE_NONCANONICAL)
+**Evaluation process:**
 
-        MUST NOT broadcast unless all checks pass.
-        """
+```
+1. Validate Intent structure and hash
+2. Validate Evidence structure and bindings
+3. Validate time evidence (Epoch Clock)
+4. Extract current_t from time evidence
+5. Check intent not expired: current_t <= intent.expiry_t
+6. Validate all required approvals
+7. Validate all required proofs
+8. Evaluate conditions deterministically
+9. If all conditions satisfied: ALLOW
+10. If any condition failed: DENY
+11. If evaluation cannot complete: LOCKED
+12. Sign outcome with evaluator key
+13. Return PreContractOutcome
+
 ```
 
-### 7.2 PSBT Template Binding (Normative)
-
-Executor MUST:
-
-1. Compute `SHA-256(DetCBOR(PSBTTemplateCanonical))`
-2. Compare against `outcome.bound_psbt_hash`
-3. REFUSE execution with `E_PSBT_TEMPLATE_MISMATCH` on mismatch
-4. Construct transaction only from the verified template
-
-### 7.2.1 Final Transaction Skeleton Binding (Normative)
-
-After PSBT finalization and **before broadcast**, the executor MUST verify that the final transaction preserves the canonical structure authorized by `PSBTTemplateCanonical`.
-
-#### Required Preservation
-
-The following properties MUST match the authorized template exactly:
-
-1. **Inputs**
-   - Input count MUST match
-   - Input ordering MUST match
-   - Each input's `(txid, vout, sequence)` MUST match the template
-
-2. **Outputs**
-   - Output count MUST match
-   - Output ordering MUST match
-   - Each output's `(amount_sats, script_pubkey)` MUST match the template
-
-3. **Locktime**
-   - Transaction `locktime` MUST match `PSBTTemplateCanonical.locktime`
-
-4. **Replaceability**
-   - Replaceability semantics MUST be determined solely by input `sequence` values and MUST match the template
-
-#### Permitted Variations
-
-The following differences are explicitly permitted and MUST NOT cause refusal:
-
-- Witness stack contents (signatures, preimages, annex data)
-- `scriptSig` content for legacy or wrapped-SegWit inputs
-- Transaction weight and vsize differences resulting from variable-length signatures
-
-#### Verification Method
-
-1. The executor MUST extract the **unsigned transaction skeleton** from the finalized PSBT.
-2. The executor MUST compare the extracted skeleton against `PSBTTemplateCanonical`.
-3. If any required preservation rule is violated, the executor MUST refuse with `E_FINAL_TX_TEMPLATE_DIVERGENCE`.
-
-#### Rationale
-
-`bound_psbt_hash` authorizes a specific transaction structure, not a best-effort approximation. This check prevents post-authorization mutation while allowing standard Bitcoin signature variability.
+**Missing, stale, malformed, or unverifiable inputs MUST result in DENY or LOCKED.**
 
 ---
 
-### 7.3 ExecutionResult (Normative)
+### 4.7 Execution Gate (Normative)
 
-`ExecutionResult` records the outcome of an execution attempt following a valid `PreContractOutcome`. It provides an auditable record of whether execution proceeded, was refused, or failed.
+Construction and signing MUST occur only if ALL of the following hold:
+
+**Outcome validation:**
+
+1. decision == "ALLOW"
+2. Outcome signature valid
+3. current_t <= valid_until_t (not expired)
+4. decision_id not previously used (not replayed)
+
+**Binding validation:**
+
+5. bound_intent_hash matches actual intent hash
+6. bound_contract_id matches actual contract_id
+7. bound_session_id matches actual session_id
+8. bound_psbt_hash matches actual template hash
+
+**Transaction validation:**
+
+9. Constructed transaction matches PSBTTemplateCanonical exactly:
+* Input count, ordering, txid, vout, sequence
+* Output count, ordering, script_pubkey, amount_sats
+* Locktime value
+* RBF semantics (via sequence)
+
+
+Permitted differences:
+* Witness stack contents (signatures)
+* scriptSig content (signatures)
+* Signature-length variance
+
+
+10. If `fee_rate_sat_vb` was binding, the final transaction fee rate MUST match the template within an explicit tolerance. Unless otherwise specified in the `PreContractIntent`, the default tolerance is ±1 sat/vB. An implementation MAY allow `fee_rate_tolerance_sat_vb` to be explicitly declared in the `PreContractIntent`; if declared, that value overrides the default tolerance.
+
+**Any validation failure MUST refuse construction.**
+
+---
+
+### 4.8 Signer Verification (Normative)
+
+Signers MUST independently verify outcomes before signing.
+
+Host software is untrusted. Signers MUST NOT rely on host verification.
+
+**Required signer checks:**
+
+1. Verify outcome signature
+2. Verify decision == "ALLOW"
+3. Verify current_t <= valid_until_t
+4. Verify bound_intent_hash matches displayed intent
+5. Verify bound_psbt_hash matches displayed template
+6. Verify template matches final transaction structure
+7. Verify decision_id not previously signed
+
+**Hardware wallet implementations:**
+
+Hardware wallets MUST display:
+- Contract ID
+- Transaction structure (inputs, outputs, amounts)
+- Authorization expiry
+- Evaluator identity
+
+Hardware wallets MUST refuse to sign if any verification fails.
+
+Any bypass of signer verification invalidates BPC conformance claims.
+
+---
+
+## 5. Relationship to Seal-360 and Execution Boundaries
+
+BPC and Seal-360 are **orthogonal, composable protocols**.
+They MAY be used together, but neither depends on the other for correctness.
+
+This section defines:
+
+* protocol boundaries,
+* the normative definition of a *spend artifact*,
+* canonical ordering rules,
+* fee-binding semantics,
+* and failure-domain separation.
+
+Nothing in this section alters earlier authorization semantics.
+It defines **where authority is allowed to exist**.
+
+---
+
+### 5.1 Protocol Boundaries
+
+**BPC (this specification):**
+
+* Governs authorization **before** transaction construction
+* Determines **whether** a transaction may exist
+* Enforces preconditions via deterministic evaluation
+* Outputs: `ALLOW`, `DENY`, or `LOCKED`
+
+**Seal-360 (separate specification):**
+
+* Governs execution **after** a transaction is signed
+* Determines **how** to avoid public mempool exposure
+* Uses encrypted direct-to-miner submission with mandatory public fallback
+* Inputs: a signed transaction (from BPC or any standard wallet)
+
+Seal-360 is **out of scope** for BPC conformance.
+Failure or absence of Seal-360 MUST NOT affect BPC authorization correctness.
+
+---
+
+### 5.2 Normative Definition: Spend Artifact
+
+A **spend artifact** is any digital object from which a broadcast-valid Bitcoin
+transaction can be produced **without re-running BPC authorization evaluation**.
+
+No spend artifact MAY exist prior to receipt and verification of a valid
+`PreContractOutcome` with `decision == ALLOW`.
+
+This definition is **normative** and applies to all BPC-conformant implementations.
+
+---
+
+#### 5.2.1 Prohibited Artifacts (MUST NOT Exist Before `ALLOW`)
+
+The following objects are **spend artifacts** and MUST NOT exist, be cached,
+or be reconstructable before a valid `ALLOW` outcome is verified:
+
+| Artifact Type                 | Description                                              |
+| ----------------------------- | -------------------------------------------------------- |
+| Fully signed transaction      | Raw Bitcoin transaction ready for broadcast              |
+| Complete PSBT                 | PSBT containing all required final scripts or witnesses  |
+| Cached signatures             | Any stored ECDSA/Schnorr signatures usable for assembly  |
+| Auto-sign configuration       | Any policy that signs without re-verifying authorization |
+| Pre-signed or deferred spends | Transactions held for later broadcast                    |
+
+Existence of any prohibited artifact prior to `ALLOW` is a **critical
+conformance violation**.
+
+---
+
+#### 5.2.2 Permitted Objects (NOT Spend Artifacts)
+
+The following MAY exist prior to authorization and do not violate this specification:
+
+| Object                                      | Rationale                        |
+| ------------------------------------------- | -------------------------------- |
+| `PreContractIntent`                         | Not a Bitcoin transaction        |
+| Unsigned PSBT                               | Cannot be broadcast or finalized |
+| Partially signed PSBT (insufficient quorum) | Cannot satisfy spending rules    |
+| Public keys                                 | Cannot authorize spending        |
+| Script or template data                     | Contains no signing material     |
+| `EvidenceBundle`                            | Authorization input only         |
+
+---
+
+#### 5.2.3 Implementation Requirements by Role
+
+**Wallet Implementations MUST:**
+
+* NOT generate or cache signatures before verifying `ALLOW`
+* NOT pre-construct signed transactions “optimistically”
+* Ensure no complete PSBT exists in storage prior to authorization
+
+**External Evaluator Implementations MUST:**
+
+* NOT generate or return signatures
+* NOT persist signature material across evaluation sessions
+* MAY return unsigned templates for inspection only
+
+**Signer / Hardware Wallet Implementations MUST:**
+
+* Independently verify `PreContractOutcome`
+* Refuse signing if `ALLOW` is absent, expired, or mismatched
+* NOT support auto-sign behaviour for BPC flows
+* Display intent and authorization context to the user
+
+**Multi-Signature Implementations MUST:**
+
+* Require all cosigners to independently verify `ALLOW`
+* Prohibit partial signature collection before authorization
+* Perform signature aggregation only after verification
+
+---
+
+#### 5.2.4 Audit Requirement
+
+Conformant implementations MUST be able to demonstrate, under audit, that:
+
+* No spend artifact existed before `ALLOW`
+* All signatures were generated after outcome verification
+* Any failure before `ALLOW` resulted in zero signing material
+
+This MAY be satisfied by deterministic logs, execution traces,
+or signer-side verification evidence.
+
+---
+
+### 5.3 Canonical Input and Output Ordering (Normative)
+
+Canonical ordering ensures deterministic hashing, cross-implementation
+consistency, and unambiguous authorization binding.
+
+These rules apply to all `PSBTTemplateCanonical` objects.
+
+---
+
+#### 5.3.1 Input Ordering
+
+Inputs MUST be ordered using **BIP-69** lexicographical ordering:
+
+1. `txid` (32-byte hash, raw byte order, ascending)
+2. `vout` (32-bit unsigned integer, ascending)
+
+This ordering MUST be applied prior to template hashing.
+
+---
+
+#### 5.3.2 Output Ordering (BPC-Specific)
+
+Outputs MUST be ordered using the following total order:
+
+1. `amount_sats` (ascending, smallest first)
+2. `script_pubkey` (lexicographical byte order)
+
+This ordering is **intentionally distinct from BIP-69**.
+
+---
+
+#### 5.3.3 Rationale
+
+BPC uses **amount-first ordering** to:
+
+* Provide deterministic disambiguation for authorization-bound templates
+* Simplify audit reasoning for treasury and high-value settlement
+* Ensure a stable, total ordering suitable for template hash binding
+
+Wallets implementing both BPC and non-BPC transactions MUST clearly
+distinguish which ordering applies.
+
+---
+
+#### 5.3.4 Compatibility Note
+
+BPC output ordering MUST NOT be described as BIP-69 compliant.
+
+Any implementation claiming BPC conformance MUST apply the ordering
+defined in this section exactly.
+
+---
+
+#### 5.3.5 Test Vector (Normative)
+
+Given the outputs:
 
 ```
+Output A: 50000 sats, scriptPubKey = 0x0014abcd...
+Output B: 50000 sats, scriptPubKey = 0x00140123...
+Output C: 100000 sats, scriptPubKey = 0x0014ffff...
+```
+
+Canonical order:
+
+1. Output B
+2. Output A
+3. Output C
+
+---
+
+### 5.4 Fee Binding Tolerance (Normative)
+
+When `fee_rate_sat_vb` is binding in `PSBTTemplateCanonical`,
+the executor MUST enforce fee conformity deterministically.
+
+Unless otherwise specified in `PreContractIntent`, the default tolerance is:
+
+```
+±1 sat/vB
+```
+
+If a different tolerance is required, it MUST be explicitly encoded in
+`PreContractIntent` and included in the intent hash.
+
+Undefined or implicit tolerance is non-conformant.
+
+---
+
+### 5.5 Failure Domain Separation (Normative)
+
+BPC separates **authorization failure** from **execution failure**.
+
+---
+
+#### 5.5.1 Authorization Failure (Evaluator Domain)
+
+Occurs when the evaluator emits `DENY` or `LOCKED`.
+
+Effects:
+
+* No transaction construction permitted
+* No signing permitted
+* No spend artifact may exist
+* Failure MUST be recorded
+* Fail-closed semantics apply
+
+---
+
+#### 5.5.2 Execution Failure (Wallet / Signer Domain)
+
+Occurs **after** a valid `ALLOW`, but before or during execution.
+
+Examples:
+
+* Outcome expiry
+* Binding mismatch
+* Replay detection
+* Signer refusal
+* Broadcast or Seal-360 failure
+
+Effects:
+
+* Execution attempt terminates
+* Authorization itself is not retroactively invalidated
+* New execution requires a fresh attempt
+
+---
+
+#### 5.5.3 Error Classification
+
+| Error Class       | Origin          | Effect             |
+| ----------------- | --------------- | ------------------ |
+| Evaluation Errors | Evaluator       | `DENY` or `LOCKED` |
+| Gate Errors       | Wallet / Signer | `REFUSE`           |
+| Broadcast Errors  | Network         | Retry or fallback  |
+
+Implementations MUST NOT conflate evaluator decisions with execution refusal.
+
+---
+
+### 5.6 Summary of Section 5
+
+Section 5 defines BPC’s **security boundary**:
+
+* Authorization precedes construction
+* Spend artifacts MUST NOT exist before `ALLOW`
+* Ordering and fee rules are deterministic and explicit
+* Authorization and execution failures are strictly separated
+* Seal-360 is optional and orthogonal
+
+Any implementation violating these constraints is **non-conformant** with BPC.
+
+---
+
+### 5.7 BPC and Seal-360 Composition (Informative)
+
+```
+┌─────────────────────────────────────────────────┐
+│        BPC + Seal-360 COMPOSITION               │
+├─────────────────────────────────────────────────┤
+│                                                 │
+│  [BPC SCOPE: Authorization Before Construction] │
+│         │                                       │
+│         ▼                                       │
+│  Does transaction meet                          │
+│  preconditions?                                 │
+│         │                                       │
+│    ┌────┴────┐                                  │
+│    │ ALLOW?  │                                  │
+│    └────┬────┘                                  │
+│         │                                       │
+│         ▼                                       │
+│  Construct + Sign                               │
+│  (Standard Bitcoin)                             │
+│         │                                       │
+│         ▼                                       │
+│  [Seal-360 SCOPE: Execution After Signing]      │
+│         │                                       │
+│         ▼                                       │
+│  Encrypted submission                           │
+│  to miner                                       │
+│         │                                       │
+│         ▼                                       │
+│  Public fallback                                │
+│  (if private relay fails)                       │
+│                                                 │
+│  BPC answers: “May this exist?”                 │
+│  Seal-360 answers: “How is this delivered?”    │
+│                                                 │
+└─────────────────────────────────────────────────┘
+```
+
+---
+
+## 6. Error Handling and Codes
+
+### 6.1 Error Categories
+
+BPC defines four error categories:
+
+* **Time errors**: Epoch Clock failures.
+* **Binding errors**: Hash or ID mismatches.
+* **Evaluation errors**: Condition failures.
+* **Execution errors**: Construction or signing failures.
+
+#### 6.1.1 Evaluation vs Execution Errors
+
+Errors are classified by the stage at which they occur:
+
+* **Evaluation Errors** result in a deterministic `DENY` or `LOCKED` outcome produced by the Evaluator.
+* **Execution Gate Errors** result in a `REFUSE` action by the Executor or Wallet, even if evaluation previously returned `ALLOW`.
+
+An error code MAY appear in both contexts, but its effect depends on the stage at which it is encountered. For example, `E_OUTCOME_EXPIRED` represents an evaluation outcome expiration when detected by the Evaluator, and a refusal condition when detected by the Execution Gate.
+
+### 6.2 Time Errors
+
+**E_TICK_MISSING**
+- Cause: No time evidence in EvidenceBundle
+- Action: Emit LOCKED
+
+**E_TICK_PROFILE_MISMATCH**
+- Cause: profile_ref does not match pinned profile
+- Action: Emit LOCKED
+
+**E_TICK_SIG_INVALID**
+- Cause: Tick signature verification failed
+- Action: Emit LOCKED
+
+**E_MIRROR_DIVERGENCE**
+- Cause: Mirrors returned different tick values
+- Action: Emit LOCKED
+
+**E_TICK_STALE**
+- Cause: Tick reuse window exceeded (>15 minutes)
+- Action: Emit LOCKED
+
+### 6.3 Binding Errors
+
+**E_INTENT_HASH_MISMATCH**
+- Cause: Computed intent_hash does not match provided hash
+- Action: Refuse evaluation
+
+**E_INTENT_EXPIRED**
+- Cause: current_t > intent.expiry_t
+- Action: Emit DENY
+
+**E_OUTCOME_EXPIRED**
+- Cause: current_t > outcome.valid_until_t
+- Action: Refuse execution
+
+**E_OUTCOME_REPLAYED**
+- Cause: decision_id already used
+- Action: Refuse execution
+
+**E_PSBT_TEMPLATE_MISMATCH**
+- Cause: bound_psbt_hash does not match actual template
+- Action: Refuse execution
+
+**E_PSBT_TEMPLATE_NONCANONICAL**
+- Cause: Template contains excluded fields or wrong ordering
+- Action: Refuse evaluation
+
+### 6.4 Evaluation Errors
+
+**E_POLICY_DENY**
+- Cause: Evaluation policy explicitly denied authorization
+- Action: Emit DENY
+
+**E_APPROVALS_MISSING**
+- Cause: Required approvals not present in evidence
+- Action: Emit DENY
+
+**E_APPROVAL_INVALID**
+- Cause: Approval signature invalid or fields incorrect
+- Action: Emit DENY
+
+**E_PROOF_INVALID**
+- Cause: Required proof missing or verification failed
+- Action: Emit DENY
+
+### 6.5 Execution Errors
+
+**E_SIGNING_FAILED**
+- Cause: Signer refused or signing operation failed
+- Action: Refuse execution
+
+**E_BROADCAST_FAILED**
+- Cause: Transaction broadcast to network failed
+- Action: Mark execution as FAILED (transaction exists but not sent)
+
+**E_FINAL_TX_TEMPLATE_DIVERGENCE**
+- Cause: Final transaction does not match PSBTTemplateCanonical
+- Action: Refuse execution
+
+---
+
+## 7. Conformance Requirements
+
+### 7.1 Evaluator Conformance
+
+A conformant evaluator implementation MUST:
+
+1. Use DetCBOR for all BPC-native objects.
+2. Integrate Epoch Clock v2 with pinned profile.
+3. Implement deterministic evaluation where the same inputs MUST produce the same outputs without referencing wall-clock time, monotonic time, or randomness.
+4. Enforce PSBTTemplateCanonical validation, including BIP-69 lexicographical ordering.
+5. Emit only ALLOW, DENY, or LOCKED decisions.
+6. Sign all outcomes with evaluator key.
+7. Enforce single-use decision_ids.
+8. Implement all time evidence validation rules, treating `validated_at_mono_ms` strictly as an ingress guard.
+9. Implement all approval validation rules.
+10. Refuse evaluation on any ambiguity or missing input.
+
+---
+
+### 7.2 Executor Conformance
+
+A conformant executor implementation MUST:
+
+1. Verify the `PreContractOutcome` signature using the trusted evaluator's public key before proceeding to transaction construction.
+2. Enforce the `valid_until_t` constraint by comparing it against the current time provided by a validated Epoch Clock tick.
+3. Maintain a local registry of used `decision_id` values to prevent outcome replay.
+4. Strictly validate that the `intent_hash`, `contract_id`, and `psbt_hash` in the outcome match the local transaction context.
+5. Construct the final Bitcoin transaction to match the `PSBTTemplateCanonical` exactly, ensuring no deviation in input/output count, sequence, or ordering.
+6. Apply canonical ordering as defined in PSBTTemplateCanonical:
+   - Inputs MUST follow BIP-69 ordering.
+   - Outputs MUST follow BPC-specific ordering (amount_sats, script_pubkey).
+7. Verify that the final transaction fee rate matches the `fee_rate_sat_vb` within the default tolerance of ±1 sat/vB, or the specific `fee_rate_tolerance_sat_vb` if declared in the intent.
+8. Refuse to sign or broadcast the transaction if any validation check in the Execution Gate fails.
+9. Handle `E_OUTCOME_EXPIRED` as a terminal refusal condition if detected at the Execution Gate.
+10. Ensure that RBF signaling in the final transaction is derived exclusively from the template sequence values.
+
+### 7.3 Signer Conformance
+
+A conformant signer (hardware wallet, HSM) implementation MUST:
+
+1. Independently verify the `PreContractOutcome` signature using the trusted evaluator's public key.
+2. Independently verify that all binding fields (`intent_hash`, `contract_id`, `psbt_hash`) in the outcome match the transaction being presented for signing.
+3. Independently verify that the outcome is not expired by checking the `valid_until_t` against a verified Epoch Clock tick.
+4. Display the Contract ID, the transaction structure (inputs, outputs, and amounts), the authorization expiry, and the Evaluator identity to the user for manual review.
+5. Maintain a local record of `decision_id` values to prevent signing multiple transactions for a single authorization.
+6. Refuse to sign the transaction if any of the above verification steps fail.
+7. Ensure that it does not rely on host software for any part of the verification process to maintain the protocol's security invariants.
+
+---
+
+### 7.4 Interoperability
+
+Conformant implementations MUST interoperate with:
+- Any conformant evaluator
+- Any conformant executor
+- Any conformant signer
+
+Cross-implementation incompatibility is a conformance violation.
+
+---
+
+## 8. Deployment Guidance
+
+### 8.1 Implementation Classes
+
+**Class 1: Wallet-Only Enforcement**
+
+Local evaluation within wallet, no external evaluator.
+
+Suitable for:
+- Personal custody
+- Simple time-based conditions
+- Single-party authorization
+
+Not suitable for:
+- Multi-party workflows
+- External proof verification
+- High-assurance settlement
+
+**Class 2: External Evaluator + Wallet**
+
+Evaluator performs evaluation, wallet verifies outcome.
+
+Suitable for:
+- OTC settlement
+- Treasury operations
+- Policy enforcement
+
+Requires:
+- Trusted evaluator deployment
+- Secure evaluator key management
+- Wallet integration with evaluator API
+
+**Class 3: Multi-Evaluator Quorum**
+
+Requires M-of-N evaluator agreement.
+
+Suitable for:
+- High-value settlement
+- Zero-downtime requirements
+- Distributed trust
+
+Requires:
+- Multiple evaluator deployments
+- Quorum coordination logic
+- Agreement verification
+
+### 8.2 Operational Recommendations
+
+**Mirror diversity:**
+- Use Epoch Clock mirrors across different jurisdictions
+- Monitor mirror agreement rates
+- Alert on divergence
+
+**Evaluator diversity:**
+- Geographic distribution (reduces single-jurisdiction risk)
+- Administrative separation (reduces correlation risk)
+- Implementation diversity (reduces bug correlation)
+
+**Monitoring:**
+- Track tick freshness
+- Track mirror agreement success rate
+- Track evaluator uptime
+- Track authorization success/failure rates
+- Alert on anomalies
+
+**Incident response:**
+- Runbooks for clock divergence
+- Runbooks for evaluator failure
+- Escalation procedures for LOCKED outcomes
+- Communication plan for downtime
+
+**Operator education:**
+- Training on fail-closed behavior
+- Understanding of sovereignty preservation
+- Awareness that refusal is not an error
+
+### 8.3 Testing and Validation
+
+Implementations MUST provide evidence demonstrating:
+
+* Deterministic evaluation (same inputs produce same outputs)
+* Cross-platform equivalence
+* Canonical encoding stability (byte-stable encode/decode/encode)
+* Proper error handling for all error codes
+* Replay prevention
+* Expiry enforcement
+* Binding verification
+
+---
+
+## 9. Security Considerations
+
+### 9.1 Threats BPC Prevents
+
+- Premature transaction construction before authorization
+- Replay of authorization outside validity windows
+- Post-authorization mutation of transaction structure
+- Execution under stale or ambiguous evidence
+- Partial execution during evaluation failures
+- Ambiguity-driven downgrade attacks
+
+### 9.2 Threats BPC Does NOT Prevent
+
+- Key compromise outside BPC scope
+- Coerced or malicious signers
+- Miner censorship or reordering (use Seal-360 for mempool protection)
+- Network denial-of-service
+- Side-channel attacks on implementation
+- Legal or contractual disputes
+- Subjective condition evaluation
+
+### 9.3 Attacker Capabilities (Assumed)
+
+- Observe network traffic and mempool contents
+- Replay or substitute artifacts between protocol phases
+- Present stale, partial, or manipulated evidence
+- Exploit time ambiguity or clock skew
+- Compromise individual mirrors or evaluators
+- Exploit implementation vulnerabilities
+
+### 9.4 Attacker Limitations (Assumed)
+
+- Cannot forge cryptographic signatures
+- Cannot alter deterministic evaluation logic without detection
+- Cannot bypass execution gate without non-conformance
+- Cannot compromise Epoch Clock profile inscription (immutable on Bitcoin blockchain)
+
+### 9.5 Template Hash Function (Normative)
+
+The template hash binds an authorization outcome to a specific, immutable transaction instance.
+
+This hash is an **execution binding**: it commits to the exact transaction bytes that will be broadcast if execution proceeds. It is distinct from the `PSBTTemplateCanonical` hash used to bind authorization to a transaction template.
+
+```text
+template_hash = SHA256(raw_tx_bytes)
+```
+
+**Where:**
+
+* `raw_tx_bytes` is the exact Bitcoin wire serialization of the transaction that would be constructed and broadcast after authorization.
+* `SHA256` denotes a single application of the SHA-256 hash function.
+
+**Requirements:**
+
+* The hash function MUST be SHA-256.
+* Double-SHA256 (SHA256d) MUST NOT be used.
+* Alternative hash functions (including SHAKE256) MUST NOT be used for this execution binding.
+
+**Rationale:**
+
+* SHA-256 is Bitcoin’s canonical hash function and is universally available across wallet, signer, and auditor implementations.
+* The security goal here is integrity binding between authorization and execution, not proof-of-work compatibility or domain separation.
+* A single-round SHA-256 avoids unnecessary implementation variance while providing a stable 32-byte commitment.
+
+Any deviation from this hash construction MUST be treated as an execution binding failure and MUST result in refusal at the execution gate.
+
+### 9.6 Canonical Transaction Serialization (Normative)
+
+The template hash MUST be computed over a canonical transaction byte sequence.
+
+**Serialization rules:**
+
+- The transaction MUST use standard Bitcoin wire serialization.
+- The following fields MUST be included exactly as serialized for broadcast:
+  - `version` (4 bytes, little-endian)
+  - all inputs:
+    - outpoint (`txid`, `vout`)
+    - `scriptSig`
+    - `sequence`
+  - all outputs:
+    - `value` (8 bytes, little-endian)
+    - `scriptPubKey`
+  - witness data (if present)
+  - `locktime` (4 bytes, little-endian)
+
+**Forbidden transformations:**
+- Witness stripping or reordering
+- Signature normalization or rewriting
+- Input or output reordering
+- Fee mutation
+- Any byte-level rewrite after hashing
+
+The byte sequence used for hashing MUST be identical to the byte sequence
+that would be broadcast if execution proceeds.
+
+Any divergence between the hashed bytes and the constructed transaction
+bytes MUST result in refusal at the execution gate.
+
+**Rationale:**
+Authorization binding is only meaningful if the authorized structure and
+the executed structure are byte-identical.
+
+### 9.7 Fee Binding and Failure Domain Separation (Normative)
+
+This section defines deterministic fee handling and clarifies the distinction
+between **evaluation failures** and **execution-gate failures**.
+
+---
+
+#### 9.7.1 Fee Rate Binding
+
+If `fee_rate_sat_vb` is specified in `PSBTTemplateCanonical`, it is **binding**.
+
+**Binding rule:**
+
+```
+
+abs(actual_fee_rate - fee_rate_sat_vb) ≤ 1 sat/vB
+
+```
+
+- The tolerance is fixed at **±1 sat/vB**.
+- Percentage-based tolerances are NOT permitted.
+- Implementations MUST use the same fee-rate calculation method when
+  evaluating and executing.
+
+If `fee_rate_sat_vb` is `null`, fee rate is not binding and MAY be chosen
+at construction time.
+
+Any transaction exceeding the allowed tolerance MUST be refused at the
+execution gate.
+
+---
+
+#### 9.7.2 Failure Domain Separation
+
+BPC defines two distinct failure domains with different semantics.
+
+##### Evaluation Failures (Evaluator Domain)
+
+Evaluation failures occur during deterministic authorization.
+
+- Result in `DENY` or `LOCKED`
+- No transaction construction permitted
+- No execution attempt allowed
+
+Examples:
+- Missing or invalid evidence
+- Failed approval verification
+- Expired intent
+- Time ambiguity or clock divergence
+
+These failures are final for the given intent and evidence set.
+
+---
+
+##### Execution-Gate Failures (Executor Domain)
+
+Execution-gate failures occur **after** a valid `ALLOW` outcome has been issued.
+
+- Result in **REFUSE**
+- Transaction construction or signing is blocked
+- Authorization itself remains valid but unusable
+
+Examples:
+- Outcome expired
+- Outcome replay detected
+- Binding mismatch (intent, session, or template hash)
+- Fee rate outside allowed tolerance
+- Final transaction divergence
+
+Execution-gate failures do NOT retroactively invalidate the evaluator decision.
+They prevent unsafe execution under changed conditions.
+
+---
+
+#### 9.7.3 Error Classification
+
+| Error Type | Domain | Action |
+|-----------|--------|--------|
+| `DENY` | Evaluator | Abort authorization |
+| `LOCKED` | Evaluator | Fail closed |
+| `E_OUTCOME_EXPIRED` | Execution gate | Refuse execution |
+| `E_OUTCOME_REPLAYED` | Execution gate | Refuse execution |
+| `E_PSBT_TEMPLATE_MISMATCH` | Execution gate | Refuse execution |
+| Fee tolerance violation | Execution gate | Refuse execution |
+
+Implementations MUST NOT conflate evaluator failures with execution-gate
+failures.
+
+---
+
+**Security Rationale:**
+
+- Evaluators decide **whether** execution is permitted.
+- Executors decide **whether it is still safe** to execute.
+
+Separating these domains preserves determinism, auditability, and fail-closed
+semantics under changing execution conditions.
+
+---
+
+### Annex A: Deterministic Encoding (Normative)
+
+#### A.1 BPC-Native Objects
+
+All BPC-native objects that are hashed or signed MUST use Deterministic CBOR (DetCBOR).
+
+**Canonical requirements:**
+
+* **Key ordering**: Keys MUST be sorted lexicographically by their encoded bytes.
+* **Definite-length encoding**: Indefinite-length arrays or maps MUST NOT be used.
+* **Unique map keys**: Duplicate keys are prohibited.
+* **No floating-point**: Only fixed-point integers are permitted.
+* **Integer representation**: MUST use the smallest possible integer representation.
+
+**Stability requirement:**
+Decode-encode cycles MUST be byte-stable, such that `original_bytes == encode(decode(original_bytes))`.
+
+#### A.2 Epoch Clock Objects
+
+Epoch Clock artifacts MUST be treated as externally canonical:
+
+* Artifacts MUST be stored and compared as opaque JCS JSON bytes.
+* Epoch Clock objects MUST NOT be re-encoded into CBOR.
+* Signature verification MUST be performed on the exact bytes received from the mirror.
+* Mirror agreement requires byte-identical comparison.
+
+#### A.3 Hash Function
+
+Unless otherwise specified:
+
+* **Hash function**: SHA-256.
+* **Input**: Canonical DetCBOR bytes or JCS JSON for Epoch Clock artifacts.
+* **Output**: 32-byte digest.
+
+---
+
+### Annex B: Multi-Evaluator Quorum (Normative)
+
+**B.1 Input Consistency**
+
+All evaluators in a quorum MUST evaluate byte-identical inputs. Input divergence is non-conformant and MUST be detected before evaluation.
+
+**B.2 Decision Precedence**
+
+Quorum decisions follow strict precedence:
+
+1. Any **DENY** outcome → overall result is **DENY**.
+2. Else, any **LOCKED** outcome → overall result is **LOCKED**.
+3. Else, a quorum of **ALLOW** outcomes is required → overall result is **ALLOW**.
+
+No voting, averaging, or reconciliation is permitted.
+
+**B.3 Quorum Satisfaction**
+
+A quorum is satisfied if M evaluators emit **ALLOW** with identical binding fields:
+
+* `bound_intent_hash`
+* `bound_contract_id`
+* `bound_session_id`
+* `bound_psbt_hash`
+
+All outcomes MUST be unexpired at execution time.
+
+**B.4 Binding Divergence**
+
+Divergent binding fields among **ALLOW** outcomes MUST result in a fail-closed state, and execution MUST be refused. No selection or reconciliation is permitted among outcomes with different bindings.
+
+**B.5 Quorum Configuration**
+
+Quorum parameters are defined as:
+
+* **M**: Minimum **ALLOW** outcomes required.
+* **N**: Total evaluators queried.
+* **M ≤ N**.
+
+Typical configurations include M=2, N=3 (majority) or M=3, N=5 (strong majority).
+
+---
+
+### Annex C: ExecutionResult (Normative)
+
+`ExecutionResult` records each execution attempt for audit and debugging.
+
+**C.1 Structure**
+
+```markdown
 ExecutionResult = {
-  version: uint,                    ; schema version (currently 1)
-  execution_id: bstr(16..32),       ; unique execution attempt identifier
-  decision_id: bstr(16..32),        ; links execution to authorization outcome
-  contract_id: bstr(16..32),        ; links execution to contract instance
-  intent_hash: bstr(32),            ; links execution to intent
-
-  status: tstr,                     ; execution status
-  txid: bstr(32) / null,            ; Bitcoin txid if broadcast occurred
-  error: ErrorObject / null,        ; populated on failure or refusal
-
-  result_t: uint                    ; Unix seconds derived from verified EpochTick.t
+  version: 1,
+  execution_id: bstr,
+  decision_id: bstr,
+  contract_id: bstr,
+  intent_hash: bstr(32),
+  status: "NOT_SENT" | "REFUSED" | "SENT" | "CONFIRMED" | "FAILED",
+  txid: bstr(32) / null,
+  error: ErrorObject / null,
+  result_t: uint
 }
 
-ErrorObject = {
-  code: tstr,                       ; standardized error code (see Section 10)
-  message: tstr,                    ; human-readable description
-  detail: map / null                ; OPTIONAL implementation-specific context
-}
 ```
 
-#### Field Semantics
+**C.2 Status Semantics**
 
-- `execution_id` uniquely identifies a single execution attempt and MUST NOT be reused.
-- `decision_id` MUST refer to the `PreContractOutcome` used for this attempt.
-- `intent_hash` and `contract_id` MUST match the corresponding fields in the intent.
-- `result_t` MUST be derived exclusively from a verified Epoch Clock tick (`EpochTick.t`) obtained for the execution attempt. No local or inferred time source is permitted.
+* **NOT_SENT**: Execution aborted before broadcast attempt due to user cancellation or pre-broadcast validation failure.
+* **REFUSED**: Authorization or verification failure prevented construction, such as an expired outcome, replayed outcome, binding mismatch, or a DENY/LOCKED decision.
+* **SENT**: Transaction successfully constructed, signed, and broadcast; `txid` MUST be present.
+* **CONFIRMED**: Transaction observed in a block via optional blockchain monitoring.
+* **FAILED**: Construction or signing succeeded but broadcast failed; the transaction exists but was not sent to the network.
 
-#### Status Values (Normative)
+**C.3 Invariants**
 
-- `"NOT_SENT"`  
-  Execution was aborted before any broadcast attempt due to local refusal or validation failure.
+* An `ExecutionResult` MUST be produced for every execution attempt.
+* `ExecutionResult` is immutable once created.
+* The `result_t` MUST be derived from Epoch Clock only, with no reliance on system time.
+* No status transition is permitted from REFUSED or FAILED to SENT.
 
-- `"REFUSED"`  
-  Execution was explicitly refused due to authorization, binding, expiry, or replay failure.
+**C.4 Error Object**
 
-- `"SENT"`  
-  A transaction was successfully broadcast to the Bitcoin network.
+```markdown
+ErrorObject = {
+  code: tstr,              // Error code (e.g., "E_OUTCOME_EXPIRED")
+  message: tstr,           // Human-readable description
+  context: map / null      // Additional debugging context
+}
 
-- `"CONFIRMED"`  
-  The broadcast transaction has been observed as included in a Bitcoin block. Confirmation tracking is OPTIONAL and outside BPC's core enforcement.
+```
+---
 
-- `"FAILED"`  
-  Execution was attempted but failed due to signing, construction, or broadcast error.
+## Annex D: Privacy Considerations (Informative)
 
-#### Error Handling Rules (Normative)
+BPC provides no privacy by default. All protocol artifacts are observable.
 
-- `error` MUST be present when `status` is `"FAILED"` or `"REFUSED"`.
-- `error` MUST be `null` when `status` is `"SENT"` or `"CONFIRMED"`.
+### D.1 Observable Information
 
-#### ExecutionResult Invariants (Normative)
+- Intent structure (inputs, outputs, amounts)
+- Contract identifiers and session IDs
+- Evaluation outcomes and timestamps
+- Approval signatures and approver identities
+- Proof content (unless encrypted or zero-knowledge)
 
-- An `ExecutionResult` MUST be produced for every execution attempt.
-- An execution attempt MUST NOT transition from `"REFUSED"` or `"FAILED"` to `"SENT"`.
-- A transaction MUST NOT be broadcast unless the associated outcome decision is `"ALLOW"` and all binding checks have passed.
-- `result_t` MUST NOT be derived from local system time, inferred clocks, or wall time sources.
+### D.2 Privacy Enhancement Techniques
 
-This object exists solely for auditability and operational clarity. It does not introduce new authority, guarantees, or enforcement semantics beyond those defined elsewhere in this specification.
+Privacy MAY be added via:
 
-### 7.4 Retry, Re-Evaluation, and State Discipline (Normative)
+**Encrypted intent bodies:**
+- Encrypt intent_body field
+- Evaluator decrypts with authorized key
+- Preserves verifiability while hiding content
 
-1. **DENY is terminal for an intent.**  
-   A `DENY` outcome MUST permanently invalidate the associated intent for execution.
+**Zero-knowledge proofs:**
+- Replace approval signatures with ZK proofs of authorization
+- Replace payment proofs with ZK proofs of payment
+- Preserves verification without revealing details
 
-2. **Retry requires a new intent.**  
-   Any retry MUST use:
-   - A new `contract_id` or a new attempt-scoped `operation_id` within `intent_body`
-   - A fresh evidence set
-   - A new evaluation
-   - A new `decision_id`
+**Private transport:**
+- Use Tor or VPN for communication with evaluators
+- Use encrypted channels (TLS)
+- Avoid correlation across intents
 
-3. **LOCKED states**  
-   When the system is `LOCKED` (or otherwise fail-closed due to time/evidence ambiguity), retries MUST be suppressed until:
-   - Fresh verifiable time is available
-   - Required predicates are satisfied
-   - Policy permits resumption
-
-This prevents replay and cross-attempt state confusion.
+**Evaluator privacy properties:**
+- Some evaluator implementations may provide privacy guarantees
+- Evaluator-specific privacy documentation should be consulted
 
 ---
 
-## 8. Epoch Clock v2 Compliance Requirements (Normative)
+## Annex E: Fee Market Considerations (Informative)
 
-Any BPC implementation claiming conformance MUST implement:
+Fee volatility may impact authorization-to-execution timing.
 
-- profile pinning to the canonical `profile_ref`,
-- tick fetching and acceptance per the mirror agreement protocol in Section 2.2.4,
-- treatment of tick bytes as opaque JCS Canonical JSON,
-- no fallback to system clocks, NTP, DNS, or wall time,
-- fail-closed behavior on divergence or unavailability,
-- reuse window handling as specified in Section 2.2.2.
+### E.1 Fee Handling Strategies
 
-Failure to satisfy any requirement above constitutes non-conformance.
+**Strategy 1: Short validity windows**
+- Keep valid_until_t close to current_t (e.g., 1 hour)
+- Reduces exposure to fee market changes
+- Requires quick execution after authorization
 
----
+**Strategy 2: Fee buffers**
+- Build fee slack into PSBT template
+- Accept higher fees than minimum required
+- Accommodates fee market increases
 
-## 9. Deterministic Evaluation Algorithm (Normative)
+**Strategy 3: Template-bound RBF**
+- Enable RBF via sequence values in template
+- Allows fee bumping after authorization
+- Preserves authorization validity
 
-Given identical canonical inputs, evaluators MUST produce identical outputs.
+**Strategy 4: Conservative estimation**
+- Use high fee estimates when creating intent
+- Reduces risk of insufficient fees
+- May overpay in stable fee markets
 
-**Core Principle:** Same Intent + Same Evidence + Same Verified Tick = Same Outcome
+### E.2 Fee Rate Binding
 
-### 9.1 Evaluation Steps (Normative)
+If PSBTTemplateCanonical includes binding fee_rate_sat_vb:
 
-Evaluators MUST perform these steps in order:
+- Authorization is specific to that fee rate (within tolerance)
+- Higher fees require new authorization
+- Prevents unexpected cost increases
 
-**Step 1: Intent Validation**
+If fee_rate_sat_vb is null:
 
-* Validate structure
-* Recompute `intent_hash`
-* DENY on mismatch (`E_INTENT_HASH_MISMATCH`) or invalid window (`E_INTENT_INVALID_WINDOW`)
+- Any fee rate is authorized
+- Executor determines fee at construction time
+- Risk of unexpectedly high fees if market volatile
 
-**Step 2: Evidence Binding**
-
-* Verify `EvidenceBundle.intent_hash == intent.intent_hash`
-* Verify `EvidenceBundle.contract_id == intent.contract_id`
-* DENY on mismatch (`E_EVIDENCE_INTENT_MISMATCH`)
-
-**Step 3: Epoch Clock Validation**
-
-* Validate pinned profile_ref
-* Validate JCS-JSON encoding
-* Verify signature over tick bytes
-* Verify mirror agreement per Section 2.2.4
-* LOCKED on failure with `E_TICK_*` or `E_MIRROR_DIVERGENCE`
-
-**Step 4: Time Authority**
-
-* Derive `current_t` from verified `EpochTick.t`
-* No other time source permitted
-
-**Step 5: Expiry Check**
-
-* If `current_t >= intent.expiry_t` → DENY (`E_INTENT_EXPIRED`)
-
-**Step 6: Preconditions**
-
-* Approvals (9.1.1)
-* External proofs (9.1.2)
-* Policy constraints (9.1.3)
-
-**Step 7: Template Binding**
-
-* Construct canonical `PSBTTemplateCanonical`
-* Compute `bound_psbt_hash`
-
-**Step 8: Replay Guards**
-
-* Enforce decision_id uniqueness
-* Track intent execution if configured
-
-**Step 9: Outcome Emission**
-
-* Emit signed `PreContractOutcome` with short validity window
-
-### 9.1.1 Approval Evaluation (Normative)
-
-For each required approval role:
-
-1. Find matching Approval with correct role
-2. Verify `signature_input == DetCBOR(ApprovalCommitment)`
-3. Verify commitment binds to intent_hash, contract_id, session_id
-4. Verify signature under approver_id and sig_alg
-5. Verify `approval_t <= current_t`
-
-DENY on failure: `E_APPROVALS_MISSING` / `E_APPROVAL_INVALID`
-
-### 9.1.2 External Proof Evaluation (Normative)
-
-Proof verification MUST be deterministic and MUST NOT require network calls.
-
-DENY on failure: `E_PROOF_INVALID` / `E_PROOF_MISSING`
-
-### 9.1.3 Policy Constraint Evaluation (Normative)
-
-Policy evaluation MUST be deterministic.
-
-DENY on failure: `E_POLICY_DENY`
-
-### 9.2 Replay Guards (Normative)
-
-Implementations MUST maintain durable state:
-
-* `seen_decision_ids` MUST survive restarts
-* Reuse MUST refuse (`E_OUTCOME_REPLAYED`)
-
-Pruning MUST use verified time only and SHOULD retain entries beyond expiry for safety.
+Recommendation: Use binding fees for high-value settlement.
 
 ---
 
-## 10. Error Codes (Normative)
+## Annex F: Non-Conformant Patterns (Informative)
 
-### 10.1 Epoch Clock Errors
+The following patterns are explicitly non-conformant and MUST be avoided:
 
-* `E_TICK_MISSING`
-* `E_TICK_PROFILE_MISMATCH`
-* `E_TICK_CANONICAL_INVALID`
-* `E_TICK_SIG_INVALID`
-* `E_MIRROR_DIVERGENCE`
-* `E_TICK_STALE`
-* `E_TICK_LINEAGE_INVALID`
+**Treating BPC as on-chain execution:**
+- BPC is pre-construction authorization, not Script or consensus
+- Do not expect on-chain enforcement of BPC rules
 
-### 10.2 Structure and Binding Errors
+**Treating ALLOW as inclusion guarantee:**
+- ALLOW authorizes construction, not blockchain confirmation
+- Miners may still refuse or delay inclusion
 
-* `E_INTENT_HASH_MISMATCH`
-* `E_EVIDENCE_INTENT_MISMATCH`
-* `E_SESSION_MISMATCH`
-* `E_INTENT_EXPIRED`
-* `E_INTENT_INVALID_WINDOW`
-* `E_OUTCOME_EXPIRED`
-* `E_OUTCOME_REPLAYED`
-* `E_OUTCOME_NOT_ALLOW`
-* `E_PSBT_TEMPLATE_MISMATCH`
-* `E_PSBT_TEMPLATE_NONCANONICAL`
-* `E_INTENT_ALREADY_EXECUTED`
+**Treating evaluators as truth oracles:**
+- Evaluators verify evidence, not assert external facts
+- Evidence must be independently verifiable
 
-### 10.3 Contract Evaluation Errors
+**Claiming BPC is quantum-safe Bitcoin replacement:**
+- BPC is authorization, not cryptographic hardening
+- Use BIP-360 for output-layer quantum resistance
+- Use Seal-360 for execution-layer quantum resistance
 
-* `E_POLICY_DENY`
-* `E_APPROVALS_MISSING`
-* `E_APPROVAL_INVALID`
-* `E_PROOF_INVALID`
-* `E_PROOF_MISSING`
-* `E_INTERNAL_ERROR`
+**Using BPC for dispute resolution:**
+- BPC prevents unauthorized construction
+- BPC does not resolve subjective disputes or legal claims
 
-### 10.4 Execution Errors
+**Removing signer sovereignty:**
+- Automating signing without user verification
+- Bypassing hardware wallet verification
+- Proceeding on behalf of key holder
 
-* `E_BROADCAST_FAILED`
-* `E_INSUFFICIENT_FEES`
-* `E_SIGNING_FAILED`
-* `E_PSBT_CONSTRUCTION_FAILED`
-* `E_FINAL_TX_TEMPLATE_DIVERGENCE`
+**Allowing construction before ALLOW:**
+- Constructing transaction "optimistically"
+- Caching signed transactions for future authorization
+- Any speculation on authorization result
+
+**Using system time instead of Epoch Clock:**
+- Wall-clock fallback when Epoch Clock unavailable
+- System time for expiry checking
+- Any time source other than verified Epoch Clock ticks
 
 ---
 
-## 11. Evaluator Trust and Operational Models (Normative)
+### Annex G: Implementation Classes (Informative)
 
-The evaluator is not a truth oracle. It verifies evidence.
+**G.1 Wallet-Only Enforcement**
 
-The evaluator signature means:
+* **Architecture**: Evaluation logic runs locally within the wallet without an external evaluator; the user configures all conditions.
+* **Suitable for**: Personal custody scenarios, simple time-based releases, and single-party authorization.
+* **Not suitable for**: Multi-party settlement, external proof verification (e.g., payment confirmations, oracles), or high-assurance auditable settlement.
+* **Security properties**: No evaluator trust is required as the user controls all evaluation logic, though verification is limited to conditions the wallet can locally process.
 
-> "Given these bytes, under these rules, the deterministic decision is X."
+**G.2 External Evaluator + Wallet**
 
-It does not mean external facts are true.
+* **Architecture**: An evaluator service performs the evaluation; the wallet submits the intent and evidence, then independently verifies the signed outcome before the signer performs a final check.
+* **Suitable for**: OTC settlement with external parties, treasury operations with policy enforcement, and multi-party approval workflows.
+* **Requirements**: Trusted evaluator deployment, secure evaluator key management, and wallet integration via API or protocol.
+* **Security properties**: The evaluator provides a verification service, but the wallet and signer remain sovereign; the evaluator cannot construct or sign transactions.
 
----
+**G.3 Multi-Evaluator Quorum**
 
-## 12. Conformance Targets
-
-### 12.1 BPC/Core
-
-A conformant implementation MUST:
-
-1. Implement schemas and validation rules
-2. Enforce DetCBOR
-3. Enforce Epoch Clock v2 handling rules
-4. Fail closed on ambiguity
-5. Enforce decision_id single-use
-6. Enforce PSBT template binding using PSBTTemplateCanonical
-
-### 12.2 BPC/Bitcoin (Execution Profile)
-
-Additionally MUST:
-
-* Refuse signing/broadcast on any binding mismatch
-* Produce ExecutionResult artifacts
-* Implement replay-guard persistence
+* **Architecture**: M-of-N evaluators must emit ALLOW; the wallet collects all outcomes and quorum logic verifies agreement and binding consistency.
+* **Suitable for**: High-value settlement requiring reduced single-evaluator trust, zero-downtime requirements, and geographic or jurisdictional diversity.
+* **Requirements**: Multiple evaluator deployments, quorum coordination logic in the wallet, and agreement verification implementation.
+* **Security properties**: Tolerates individual evaluator failure or compromise; requires M evaluators to collude for incorrect authorization; provides higher availability.
+* **Trade-offs**: Increased latency, coordination complexity, and operational overhead.
 
 ---
 
-## 13. Determinism Validation (Normative)
+### Annex H: Future Extensions (Informative)
 
-Implementations MUST provide test vectors proving:
+**H.1 Zero-Knowledge Evidence**
+Replace approvals and proofs with zero-knowledge proofs:
 
-* Same inputs → same outputs across implementations
-* Same inputs → same outputs across platforms
-* Output hashes stable when signatures removed
+* Prove authorization without revealing approver identity.
+* Prove payment without revealing amount or parties.
+* Preserves verification while enhancing privacy.
 
----
+**H.2 Threshold Signatures**
+Integration with threshold signature schemes:
 
-## 14. Mandatory Test Vectors (Normative)
+* Approval expressed as threshold signature shares.
+* Combines authorization and signing in single operation.
+* Reduces round-trips in multi-party scenarios.
 
-Conformant implementations MUST pass the BPC reference test vectors when published.
+**H.3 Cross-Chain Bridge Discipline**
+Use BPC to govern cross-chain transfers:
 
-Implementations MUST ship test vectors demonstrating:
+* Intent includes source and destination chains.
+* Evidence includes cross-chain proofs.
+* Prevents premature withdrawal before deposit confirmed.
 
-1. Basic ALLOW
-2. Profile mismatch
-3. Mirror divergence
-4. Stale tick beyond reuse window
-5. Intent expiry
-6. Outcome replay
-7. Outcome expiry
-8. Intent hash mismatch
-9. Session mismatch
-10. Missing approvals
-11. Invalid approval signature
-12. PSBT template mismatch
-13. PSBT template non-canonical rejection
-14. Cross-implementation equivalence
+**H.4 Hardware Wallet Protocol Extensions**
+Dedicated hardware wallet protocols for BPC:
 
----
+* Native BPC object display and verification.
+* Secure outcome storage and replay prevention.
+* User-friendly authorization review.
 
-## 15. Worked Example: OTC Delivery-vs-Payment (DvP)
+**H.5 Richer Attestation Types**
+Support for additional evidence types:
 
-(Example uses `*_t` Unix seconds fields and binds outcome to a canonical PSBT template.)
-
----
-
-## 16. Capabilities Enabled by BPC
-
-* Deterministic off-chain evaluation
-* Enforceable preconditions before transaction existence
-* Signed audit trail for allow/deny
-* Standard Bitcoin settlement
+* Government-issued digital identity attestations.
+* Corporate authorization signatures.
+* Notarized documents.
+* Regulatory compliance proofs.
 
 ---
 
-## 17. Comparison to Existing Approaches (Informative)
+### Annex I: Determinism Verification (Informative)
 
-BPC occupies: **deterministic off-chain evaluation + standard Bitcoin settlement**.
+#### I.1 Example Intent Parameters
 
----
+A `PreContractIntent` MAY be constructed with:
 
-## 18. Privacy Considerations (Informative)
+* A fixed `contract_id`
+* A fixed `session_id`
+* An `expiry_t` expressed as an Epoch Clock tick
+* A `PSBTTemplateCanonical` containing:
 
-BPC does not provide privacy by default. Add privacy via encrypted intent bodies, ZK proofs, or evaluator quorum.
+  * One input
+  * One output
+  * No signatures
+  * No witnesses
+  * `fee_rate_sat_vb = null`
 
----
-
-## 19. Fee Market Considerations (Informative)
-
-Fee volatility is handled operationally using short validity windows, fee buffers, and optional RBF policies (expressed in template).
-
----
-
-## 20. Future Extensions (Informative)
-
-ZK evidence, multi-evaluator quorum, cross-chain bridge discipline, and richer proof types.
+The intent MUST be encoded using Deterministic CBOR with stable key ordering and definite-length encoding.
 
 ---
 
-## 21. Implementation Checklist
+#### I.2 Deterministic Properties
 
-* [ ] DetCBOR encoder/decoder
-* [ ] Epoch Clock v2 client (mirror agreement per Section 2.2.4, JCS bytes, pinned profile)
-* [ ] Evaluator with deterministic ordering
-* [ ] PSBTTemplateCanonical hashing and enforcement
-* [ ] Durable replay guard store
-* [ ] Executor integration with wallet signing/broadcast
-* [ ] Test vectors and determinism harness
+* Encoding the same logical intent data MUST produce byte-identical canonical bytes.
+* Hashing those canonical bytes MUST produce a stable `intent_hash`.
+* Re-encoding the decoded object MUST produce identical bytes.
+* Evaluation of the same intent and evidence inputs MUST produce the same decision outcome.
 
----
-
-## 22. Naming and Positioning
-
-Pre-Contracts execute *before* a Bitcoin transaction exists.
-
-BPC is not an L2 and does not modify Bitcoin.
+Any deviation is non-conformant.
 
 ---
 
-## 23. FAQ
+#### I.3 Evaluation Behavior
 
-**Q: Isn't this just smart contracts?**  
-A: No. Smart contracts execute on-chain. BPC executes off-chain and only produces standard Bitcoin transactions. No new opcodes, no VM, no consensus changes.
+Given:
 
-**Q: Why not just use Bitcoin Script?**  
-A: Bitcoin Script is limited and doesn't support complex preconditions. BPC complements Script by handling preconditions off-chain while settlement remains on-chain.
+* Valid Epoch Clock time evidence not exceeding `expiry_t`
+* No required approvals
+* No required external proofs
 
-**Q: Doesn't this create a trusted oracle?**  
-A: No. Epoch Clock is decentralized (Bitcoin-inscribed profile, independent mirrors). Time authority derives from Bitcoin's immutability, not a single entity.
+A conformant evaluator MUST emit:
 
-**Q: Can someone bypass BPC and just sign directly?**  
-A: Yes — but then they violate their own policy. BPC doesn't stop signing; it enables wallets to refuse signing unless conditions are met. Sovereignty remains with the signer.
+```
+decision = ALLOW
+```
 
-**Q: Why not use Lightning or another L2?**  
-A: BPC is for on-chain settlement with preconditions. Lightning is for off-chain payment channels. Different use cases.
-
-**Q: Isn't this overengineering?**  
-A: For simple transactions, yes. For institutional custody, OTC, and policy-enforced multisig, BPC provides necessary rigor.
-
-**Q: Does this require running new infrastructure?**  
-A: Only if you want to run your own Epoch Clock mirror. Most users can use public mirrors just like they use public Bitcoin nodes.
+If time evidence is unavailable, unverifiable, or exceeds `expiry_t`, evaluation MUST emit `LOCKED` or `DENY` as defined in the core protocol.
 
 ---
 
-## 24. Security Considerations
+#### I.4 Verification Checklist
 
-Template substitution prevented by mandatory template binding. Replay prevented by decision_id single-use and durable replay store. Time manipulation prevented by Epoch Clock v2.
-
----
-
-## Appendix A — Boundary Clarifications (Normative)
-
-The following examples illustrate **non-conformant interpretations or uses** of BPC. Any implementation or documentation exhibiting these patterns MUST be considered non-compliant with this specification.
-
-### A.1 Treating BPC as an On-Chain Contract System
-
-**Non-conformant behavior:**  
-- Claiming BPC "executes contracts on Bitcoin"
-- Encoding BPC logic into Bitcoin Script
-- Expecting miners to enforce BPC rules
-
-**Why non-conformant:**  
-BPC performs no on-chain execution and defines no Script semantics. All evaluation occurs strictly off-chain prior to transaction construction.
+* Deterministic CBOR encoding stability
+* Canonical ordering of PSBT templates
+* Separation between intent hashing and execution binding
+* Absence of system-time dependence in deterministic evaluation
+* Fail-closed behavior under missing or ambiguous inputs
 
 ---
 
-### A.2 Treating BPC Outcomes as Settlement Guarantees
+### Normative References
 
-**Non-conformant behavior:**  
-- Claiming ALLOW guarantees transaction inclusion
-- Claiming ALLOW prevents censorship or reorgs
-- Claiming ALLOW enforces ordering or timing on miners
-
-**Why non-conformant:**  
-Bitcoin miners remain the sole arbiters of inclusion and ordering. BPC authorization ends at transaction construction.
-
----
-
-### A.3 Treating Evaluators or Mirrors as Trusted Authorities
-
-**Non-conformant behavior:**  
-- Treating a single evaluator as authoritative truth
-- Treating a single Epoch Clock mirror as authoritative time
-- Skipping local verification in favor of "trusted servers"
-
-**Why non-conformant:**  
-BPC requires local verification, deterministic evaluation, and fail-closed behavior. Mirrors provide availability, not authority.
+* **RFC 2119:** Key words for RFCs to Indicate Requirement Levels
+* **RFC 8949:** Concise Binary Object Representation (CBOR)
+* **RFC 8785:** JSON Canonicalization Scheme (JCS)
+* **BIP 174:** Partially Signed Bitcoin Transactions
+* **BIP 69:** Lexicographical Indexing of Transaction Inputs and Outputs
+* **Epoch Clock v2.0.0:** Pinned profile (`ordinal:439d7ab1972803dd984bf7d5f05af6d9f369cf52197440e6dda1d9a2ef59b6ebi0`)
 
 ---
 
-### A.4 Treating BPC as a Quantum-Safe Bitcoin Replacement
+### Informative References
 
-**Non-conformant behavior:**  
-- Claiming BPC "makes Bitcoin quantum safe"
-- Claiming BPC replaces secp256k1
-- Claiming BPC prevents quantum attacks on on-chain keys
-
-**Why non-conformant:**  
-BPC does not modify Bitcoin consensus cryptography. Post-quantum mechanisms are optional extensions enforced via policy layers, not consensus.
+* **Seal-360:** Execution-Layer Mitigation for BIP-360
+* **BIP-360:** Pay-to-Tapscript-Hash specification
 
 ---
 
-### A.5 Treating BPC as a Dispute Resolution or Escrow System
+### Acknowledgments
 
-**Non-conformant behavior:**  
-- Expecting BPC to resolve disagreements
-- Expecting BPC to judge intent, fairness, or correctness
-- Expecting BPC to reverse or amend executed transactions
-
-**Why non-conformant:**  
-BPC evaluates evidence deterministically. It does not interpret intent, resolve disputes, or provide remedies.
+Bitcoin and PSBT contributor communities, CBOR/JCS canonical encoding standards, Epoch Clock design contributors, BIP-360 team for quantum-resistant outputs, and the post-quantum cryptography research community.
 
 ---
 
-### A.6 Treating BPC as Mandatory or Coercive
-
-**Non-conformant behavior:**  
-- Claiming BPC prevents users from signing transactions
-- Claiming BPC enforces policy beyond user choice
-- Claiming BPC removes user sovereignty
-
-**Why non-conformant:**  
-BPC enables refusal logic. The decision to sign always remains with the key holder.
-
----
-
-## Appendix B — Evaluator Topology and Quorum Guidance (Informative)
-
-BPC supports both single-evaluator and multi-evaluator deployments.
-
-Implementers SHOULD note:
-
-- Single-evaluator deployments introduce social and operational centralization risk
-- Multi-evaluator quorum reduces unilateral approval, denial, and compromise impact
-
-Recommended best practice for high-value or institutional deployments:
-
-- Two or more independent evaluators
-- Administrative and geographic diversity
-- Explicit quorum thresholds defined in policy
-- Independent signing keys per evaluator
-
-This appendix is guidance only. Enforcement remains policy-defined.
-
----
-
-## Appendix C — Operational Deployment Considerations (Informative)
-
-Deployments SHOULD plan for:
-
-- Mirror diversity across jurisdictions
-- Monitoring of tick freshness and mirror agreement
-- Runbooks for:
-  - Epoch Clock divergence
-  - Profile rotation
-  - Evaluator key compromise
-- Explicit operator education on fail-closed behavior
-
-BPC prioritizes correctness and auditability over availability.
-
----
-
-## 25. References (Informative)
-
-* Epoch Clock v2.0.0 (pinned canonical profile_ref)
-* RFC 2119, RFC 8949, RFC 8785
-* BIP 174
-
----
-
-## 26. Acknowledgements (Informative)
-
-BPC builds on established primitives and norms from the Bitcoin and security engineering communities.
-
-The author acknowledges:
-
-- **Satoshi Nakamoto** and the Bitcoin contributor community, for the UTXO settlement model and the operational reality that high-assurance systems must remain consensus-compatible.
-- The authors of **BIP 174 (PSBT)**, for standardizing interoperable transaction construction workflows that enable deterministic, tool-friendly signing pipelines.
-- The authors and maintainers of **Taproot-related BIPs (BIP 340/341/342)**, for modernizing Bitcoin's script-path expressiveness and making execution-hardening patterns practical under current consensus.
-- The **CBOR** and **JCS Canonical JSON** communities (RFC 8949 and RFC 8785), for canonical encoding foundations that make cross-implementation determinism and byte-stable hashing/signing achievable.
-- The **post-quantum cryptography** research community and standardization efforts, for advancing practical signature schemes and verification discipline needed for long-lived security systems.
-
-BPC is an independent specification and is not endorsed by any of the above parties.
-
----
-
-## 27. Version History
-
-**v1.0.0 (January 2026)**
-
-- Initial public specification
-- Refusal-first authorization model
-- Deterministic precondition evaluation
-- Canonical PSBTTemplateCanonical binding
-- Unix-seconds (`_t`) time semantics aligned to EpochTick.t
-- Explicit threat model and security invariants
-- Bitcoin-native positioning and sovereignty guarantees
-
----
-
-If you find this work useful and want to support it, you can do so here:  
+Support this work:
 bc1q380874ggwuavgldrsyqzzn9zmvvldkrs8aygkw
